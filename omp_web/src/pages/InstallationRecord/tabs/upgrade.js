@@ -10,8 +10,7 @@ import {
 import { fetchGet, fetchPost } from "@/utils/request";
 import { apiRequest } from "@/config/requestApi";
 import moment from "moment";
-import ServiceUpgradeModal from "../config/ServiceUpgradeModal";
-
+import ServiceRollbackModal from "../../AppStore/config/ServiceRollbackModal";
 const renderStatus = (text) => {
   switch (text) {
     case 0:
@@ -29,10 +28,17 @@ const renderStatus = (text) => {
   }
 };
 
+const notProhibit = {
+  cursor: "not-allowed",
+  color: "#bbbbbb",
+};
+
 const Upgrade = ({ history }) => {
   const [loading, setLoading] = useState(false);
   //table表格数据
   const [dataSource, setDataSource] = useState([]);
+
+  const [rowId, setRowId] = useState("");
 
   const [pagination, setPagination] = useState({
     current: 1,
@@ -124,9 +130,19 @@ const Upgrade = ({ history }) => {
                 查看
               </a>
               <a
-                style={{ marginLeft: 10 }}
+                style={
+                  record.can_rollback
+                    ? { marginLeft: 10 }
+                    : {
+                        marginLeft: 10,
+                        ...notProhibit,
+                      }
+                }
                 onClick={() => {
-                  setVfModalVisibility(true);
+                  if (record.can_rollback) {
+                    setRowId(record.id);
+                    setVfModalVisibility(true);
+                  }
                 }}
               >
                 回滚
@@ -230,13 +246,12 @@ const Upgrade = ({ history }) => {
           rowKey={(record) => record.id}
         />
       </div>
-      {/* <ServiceUpgradeModal
-        vfModalVisibility={vfModalVisibility}
-        setVfModalVisibility={setVfModalVisibility}
-        dataSource={serviceList}
-        // installTitle={installTitle.current}
+      <ServiceRollbackModal
+        sRModalVisibility={vfModalVisibility}
+        setSRModalVisibility={setVfModalVisibility}
         initLoading={loading}
-      /> */}
+        fixedParams={`?history_id=${rowId}`}
+      />
     </OmpContentWrapper>
   );
 };
