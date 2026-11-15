@@ -1,70 +1,33 @@
-# Getting Started with Create React App
+# omp_web — OMP 运维管理平台前端
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+基于 [vue-vben-admin v5](https://github.com/vbenjs/vue-vben-admin)(裁剪版 monorepo,仅保留 `apps/web-antd`:ant-design-vue 4 + Vue 3.5 + Vite + Tailwind 4 + TypeScript)。
 
-## Available Scripts
+## 快速开始
 
-In the project directory, you can run:
+```bash
+cd omp_web
+pnpm install
+pnpm dev:antd     # 开发模式(http://localhost:5666,端口占用自动顺延)
+pnpm build:antd   # 生产构建
+pnpm test:unit    # vitest 单测(根目录运行)
+```
 
-### `yarn start`
+要求:Node ≥ 22.18、pnpm ≥ 10(corepack 自动管理版本)。
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in the browser.
+**构建产物**:输出至 `omp_web/dist/`(同时打包 `dist.zip`),与平台部署链路(如 `scripts/source/update_conf.py` 的静态目录)兼容。
 
-The page will reload if you make edits.\
-You will also see any lint errors in the console.
+## 后端联调
 
-### `yarn test`
+- dev 代理:`apps/web-antd/vite.config.ts` 将 `/api`、`/tool`、`/package_hub`、`/proxy` 代理到后端(默认 `http://127.0.0.1:19001`,按实际部署修改)
+- 后端统一响应包 `{code: 0成功|1失败, message, data}`;错误走 HTTP 200 + code=1
+- 认证:`POST /api/login/`(用户名/密码 RSA 公钥加密,公钥在 `apps/web-antd/src/utils/rsa.ts`);JWT 会话在 `jwtToken` cookie,**请求层不发 Authorization 头**(后端仅认 `JWT` 前缀,发 `Bearer` 会认证失败)
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+## 关键开发约定
 
-### `yarn build`
-
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
-
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
-
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
-
-### `yarn eject`
-
-**Note: this is a one-way operation. Once you `eject`, you can’t go back!**
-
-If you aren’t satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
-
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you’re on your own.
-
-You don’t have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn’t feel obligated to use this feature. However we understand that this tool wouldn’t be useful if you couldn’t customize it when you are ready for it.
-
-## Learn More
-
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
-
-To learn React, check out the [React documentation](https://reactjs.org/).
-
-### Code Splitting
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
-
-### Analyzing the Bundle Size
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
-
-### Making a Progressive Web App
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
-
-### Advanced Configuration
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
-
-### Deployment
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
-
-### `yarn build` fails to minify
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+1. **API 层**:接口定义放 `apps/web-antd/src/api/<模块>.ts`,路径全 `/api/...` 前缀(`VITE_GLOB_API_URL` 为空,不要拼 baseURL)
+2. **请求**:统一用 `#/api/request` 的 `requestClient`(自动解包 data、未认证登出、cookie 凭证、150s 超时)
+3. **列表页模板**:参照 `apps/web-antd/src/views/operation-record/login-log.vue`(最简)与 `views/alarm-log/index.vue`(复杂交互:列筛选/批量已读/iframe 抽屉)。**布局三层基线(缺一不可)**:① `<Page content-class="min-h-0 overflow-hidden">` ② `gridOptions: { height: 'auto' }` ③ `useVbenVxeGrid({ class: 'flex flex-col', gridClass: 'min-h-0 flex-1' })`——表体内部滚动、分页钉视口底、700×600~1920×1080 自适应。**vxe 远程排序/筛选四开关**:`sortConfig/filterConfig: {remote:true}` + `proxyConfig: {sort:true, filter:true}`,`sorts`/`filters` 从 `ajax.query` **第一参**解构。**排序映射**:asc→`field`(无前缀)、desc→`-field`(标准 DRF;个别后端自定义 `asc` 参数的接口以其实际契约为准)
+4. **路由/菜单**:`apps/web-antd/src/router/routes/modules/omp.ts`;新增页面在该模块登记并指向对应 component
+5. **用户信息**:OMP 无 /me 接口,登录后以表单用户名 `GET /api/users/users/?username=` 过滤获取角色(SuperUser/ReadOnlyUser),菜单不做角色过滤(权限在后端中间件)
+6. **图表**:用 `@vben/plugins/echarts` 的 `EchartsUI` + `useEcharts`(echarts 按需注册,无需自装依赖);环形进度等已封装见 `apps/web-antd/src/components/progress-ring.vue`
+7. **query 透传**:跨页跳转一律用 query;`router/guard.ts` 已处理「带 query 直访/刷新被动态路由首载 replace 剥参」问题,目标页从 `route.query` 读初始筛选

@@ -1,2 +1,0 @@
-export const SET_VIEWSIZE = "SET_VIEWSIZE";
-//export const CHANGE_ENVINFO = "CHANGE_ENVINFO";
