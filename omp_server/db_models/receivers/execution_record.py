@@ -10,7 +10,10 @@ def create_execution_record(instance, created=False, *args, **kwargs):
     module = instance.__class__.__name__
     obj, _ = ExecutionRecord.objects.get_or_create(
         module=module,
-        module_id=instance.module_id
+        module_id=instance.module_id,
+        # 执行记录跟随实例环境（多环境架构收口第二波）：查找键与
+        # defaults 均带 env，B 环境执行记录不再恒落 default 而不可见
+        env=getattr(instance, "env", None)
     )
     old_state = obj.state
     state = f"{module.upper()}_{instance.execution_record_state}"

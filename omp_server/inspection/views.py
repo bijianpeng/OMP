@@ -1,6 +1,6 @@
 # !/usr/bin/python3
 # -*-coding:utf-8-*-
-# Author: len chen
+# Author: omp
 # CreateDate: 2021/10/13 6:06 下午
 # Description: 巡检视图
 import datetime
@@ -19,9 +19,10 @@ from django_filters.rest_framework.backends import DjangoFilterBackend
 from rest_framework.mixins import (
     ListModelMixin, CreateModelMixin, UpdateModelMixin, RetrieveModelMixin)
 from utils.plugin.crontab_utils import CrontabUtils
+from utils.middleware_handler import get_request_env
 from inspection.tasks import get_prometheus_data
 from db_models.models import (
-    Env, Service, InspectionHistory, InspectionCrontab, InspectionReport, ModuleSendEmailSetting)
+    Service, InspectionHistory, InspectionCrontab, InspectionReport, ModuleSendEmailSetting)
 from inspection.filters import (
     InspectionHistoryFilter, InspectionCrontabFilter, )
 from inspection.serializers import (
@@ -39,9 +40,12 @@ class InspectionServiceView(ListModelMixin, GenericViewSet):
     """
 
     def list(self, request, *args, **kwargs):
-        # 只能是安装成功的组件
+        # 只能是安装成功的组件（且仅当前环境上下文的组件，跨环境
+        # 服务不可选入巡检——多环境架构 Task 7b）
         rets = list()
-        _ = Service.objects.filter(service__is_base_env=False).exclude(service__app_port=None).exclude(
+        _ = Service.objects.filter(
+            env=get_request_env(request),
+            service__is_base_env=False).exclude(service__app_port=None).exclude(
             service_status__in=[5, 6, 7])
         for i in _:
             rets.append({'service__id': i.id,
@@ -65,6 +69,11 @@ class InspectionHistoryView(ListModelMixin, GenericViewSet, CreateModelMixin):
     # 操作描述信息
     get_description = "查询巡检历史记录列表"
     post_description = "查询巡检历史记录列表"
+
+    def get_queryset(self):
+        # 巡检记录列表按当前环境上下文过滤（多环境架构 Task 12）
+        return InspectionHistory.objects.filter(
+            env=get_request_env(self.request))
 
     def list(self, request, *args, **kwargs):
         # 获取序列化数据列表
@@ -109,7 +118,9 @@ class InspectionHistoryView(ListModelMixin, GenericViewSet, CreateModelMixin):
     def create(self, request, *args, **kwargs):
         data_dict = request.data
         # 一、创建巡检历史表数据
-        env_obj = Env.objects.filter(id=data_dict['env']).first()
+        # 服务端以请求环境上下文为准，覆盖请求体 env（防伪造，
+        # 兼容旧前端固定传 env: 1 的请求体）
+        env_obj = get_request_env(request)
         data_dict['env'] = env_obj
         data_dict['inspection_name'] = self.joint_inspection_name(data_dict)
         his_obj = InspectionHistory(**data_dict)
@@ -147,6 +158,12 @@ class InspectionCrontabView(RetrieveModelMixin, ListModelMixin, GenericViewSet,
     post_description = "新建巡检任务配置列表"
     put_description = "更新巡检任务配置列表"
 
+    def get_queryset(self):
+        # 巡检任务列表/详情按当前环境上下文过滤（多环境架构 Task 12）；
+        # update 按 job_type 定位记录，同样只允许本环境行
+        return InspectionCrontab.objects.filter(
+            env=get_request_env(self.request))
+
     @staticmethod
     def transfer_week(request):
         """
@@ -166,10 +183,17 @@ class InspectionCrontabView(RetrieveModelMixin, ListModelMixin, GenericViewSet,
         # 判断是否需要下发任务到celery：0-开启，1-关闭
         is_success = True
         request.data['job_type'] = int(request.data.get('job_type'))
+        # 服务端以请求环境上下文为准覆盖请求体 env（防伪造）；
+        # 覆盖后的 env 随 task_kwargs 下发定时任务，任务侧按该环境
+        # 组装巡检数据并落巡检记录
+        env_obj = get_request_env(request)
+        request.data['env'] = env_obj.id
         if request.data.get('is_start_crontab') == 0:
             tp = {0: 'deep', 1: 'host', 2: 'service'}
+            # 定时任务名 per-env：同名任务在不同环境并存互不冲突
+            # （多环境架构 Task 7b，命名与 0036 迁移的存量改写一致）
             task_name = \
-                f"inspection_cron_task_{tp.get(request.data.get('job_type'))}"
+                f"inspection_cron_task_{env_obj.code}_{tp.get(request.data.get('job_type'))}"
             task_func = "inspection.tasks.inspection_crontab"
             cron_obj = CrontabUtils(task_name=task_name, task_func=task_func,
                                     task_kwargs=request.data)
@@ -196,10 +220,15 @@ class InspectionCrontabView(RetrieveModelMixin, ListModelMixin, GenericViewSet,
         # 判断是否需要下发任务到celery：0-开启，1-关闭
         is_success = True
         request.data['job_type'] = int(request.data.get('job_type'))
+        # 服务端以请求环境上下文为准覆盖请求体 env（防伪造），
+        # 覆盖后的 env 随 task_kwargs 重新下发定时任务
+        env_obj = get_request_env(request)
+        request.data['env'] = env_obj.id
         if request.data.get('is_start_crontab') == 0:
             tp = {0: 'deep', 1: 'host', 2: 'service'}
+            # 定时任务名 per-env（与 create 链路一致）
             task_name = \
-                f"inspection_cron_task_{tp.get(request.data.get('job_type'))}"
+                f"inspection_cron_task_{env_obj.code}_{tp.get(request.data.get('job_type'))}"
             task_func = 'inspection.tasks.inspection_crontab'
             cron_obj = CrontabUtils(task_name=task_name, task_func=task_func,
                                     task_kwargs=request.data)
@@ -217,8 +246,9 @@ class InspectionCrontabView(RetrieveModelMixin, ListModelMixin, GenericViewSet,
             is_success, job_name = cron_obj.create_crontab_job(**cron_args)
         else:
             tp = {0: 'deep', 1: 'host', 2: 'service'}
+            # 定时任务名 per-env（与 create 链路一致）
             task_name = \
-                f"inspection_cron_task_{tp.get(request.data.get('job_type'))}"
+                f"inspection_cron_task_{env_obj.code}_{tp.get(request.data.get('job_type'))}"
             task_func = 'inspection.tasks.inspection_crontab'
             cron_obj = CrontabUtils(task_name=task_name, task_func=task_func,
                                     task_kwargs=request.data)
@@ -248,8 +278,11 @@ class InspectionReportView(GenericViewSet, RetrieveModelMixin):
         data_dict = request.parser_context.get('kwargs')
         _r = InspectionReport.objects.filter(
             inst_id=data_dict.get('inst_id')).first()
+        # 巡检报告按 id 查看：仅允许当前环境上下文的巡检记录
+        # （多环境架构 Task 12）
         _h = InspectionHistory.objects.filter(
-            id=data_dict.get('inst_id')).first()
+            id=data_dict.get('inst_id'),
+            env=get_request_env(request)).first()
         if not _r or not _h:
             return Response('巡检报告缺失，暂不可查看')
 
@@ -267,8 +300,8 @@ class InspectionSendEmailSettingView(GenericViewSet, ListModelMixin, CreateModel
     serializer_class = Serializer
 
     def list(self, request, *args, **kwargs):
-        # env_id = request.GET.get("env_id")
-        env_id = 1  # 单环境暂为1
+        # 邮件设置读写均按当前环境上下文（多环境架构 Task 12）
+        env_id = get_request_env(request).id
         email_setting = ModuleSendEmailSetting.get_email_settings(
             env_id, "inspection")  # TODO 暂写死为巡检
         if not email_setting:
@@ -281,7 +314,8 @@ class InspectionSendEmailSettingView(GenericViewSet, ListModelMixin, CreateModel
         )
 
     def create(self, request, *args, **kwargs):
-        env_id = request.data.get("env_id")
+        # 服务端以请求环境上下文为准，忽略请求体 env_id（防伪造）
+        env_id = get_request_env(request).id
         send_email = request.data.get("send_email", False)
         to_users = request.data.get("to_users")
         if not to_users and send_email:

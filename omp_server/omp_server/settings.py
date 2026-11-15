@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'db_models',
     'users',
+    'env_manage',
     'tests',
     'inspection',
     'service_upgrade',
@@ -63,6 +64,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'utils.middleware_handler.EnvContextMiddleware',
     'utils.middleware_handler.RoleAuthenticationMiddleware',
     'utils.middleware_handler.OperationLogMiddleware'
 ]
@@ -306,8 +308,17 @@ INTERFACE_KINDS = {"/api/appStore/upload/": "修改",
                    "/api/services/SelfHealingSetting/": "修改",
                    "/api/services/UpdateSelfHealingHistory/": "修改",
                    "/api/users/users/": "新增",
-                   "/api/users/updatePassword/": "修改"
+                   "/api/users/updatePassword/": "修改",
+                   # 环境管理：POST /api/env/ 需登记（OperationLogMiddleware
+                   # 仅对 method_dc 未覆盖的方法查本表，POST 走此条目）；
+                   # PATCH/DELETE 详情路由（/api/env/{id}/）由 method_dc 的
+                   # patch→修改 / delete→删除 映射覆盖，无需静态登记
+                   "/api/env/": "新增"
                    }
 
 # for automated testing
 DATA_JSON_SECRET = "Yunweiguanli@OMP_123"
+
+if os.environ.get('PYTEST_CURRENT_TEST'):
+    REST_FRAMEWORK['DEFAULT_AUTHENTICATION_CLASSES'] = []
+    REST_FRAMEWORK['DEFAULT_PERMISSION_CLASSES'] = ['rest_framework.permissions.AllowAny']

@@ -15,7 +15,7 @@ from rest_framework.serializers import (
 )
 
 from db_models.models import (
-    Host, Env, HostOperateLog, Service
+    Host, HostOperateLog, Service
 )
 from hosts.tasks import (
     host_agent_restart, init_host,
@@ -23,6 +23,7 @@ from hosts.tasks import (
     reinstall_monitor_celery_task,
     delete_hosts
 )
+from utils.middleware_handler import get_request_env
 
 from utils.plugin.ssh import SSH
 from utils.plugin.crypto import AESCryptor
@@ -44,12 +45,16 @@ class HostUninstallSerializer(ModelSerializer):
         fields = ('id',)
 
     def validate(self, attrs):
-        """ 校验主机是否存在服务 """
+        """ 校验主机是否存在服务（仅限当前请求环境，跨环境主机 id
+        视为不存在——多环境架构 Task 7b） """
 
         request_data = self.context.get('request').data
         host_list = request_data.get("host_ids", [])
+        env = get_request_env(self.context.get('request'))
         host_ls = list(Host.objects.filter(
-            id__in=host_list).values_list('ip', flat=True))
+            id__in=host_list, env=env).values_list('ip', flat=True))
+        if len(host_ls) != len(host_list):
+            raise ValidationError(f"主机列表中有不属于当前环境的主机")
         service_obj = Service.objects.filter(ip__in=host_ls).exclude(
             service__is_base_env=True
         )
@@ -132,11 +137,8 @@ class HostSerializer(ModelSerializer):
         help_text="操作系统",
         required=True, max_length=128,
         error_messages={"required": "必须包含[operate_system]字段"})
-    env = serializers.PrimaryKeyRelatedField(
-        help_text="环境",
-        required=False,
-        queryset=Env.objects.all(),
-        error_messages={"does_not_exist": "未找到对应环境"})
+    env_name = serializers.SerializerMethodField(
+        help_text="环境名称")
     run_user = serializers.CharField(
         help_text="运行用户",
         required=False, default="",
@@ -163,13 +165,17 @@ class HostSerializer(ModelSerializer):
     class Meta:
         """ 元数据 """
         model = Host
-        exclude = ("is_deleted", "agent_dir",)
+        exclude = ("is_deleted", "agent_dir", "env",)
         read_only_fields = (
             "service_num", "alert_num", "host_name", "operate_system",
             "memory", "cpu", "disk", "is_maintenance", "host_agent",
             "monitor_agent", "host_agent_error", "monitor_agent_error",
             "init_status"
         )
+
+    def get_env_name(self, obj):
+        """ 输出环境名称（多环境架构：前端按名称展示，不输出裸 env id） """
+        return obj.env.name if obj.env else None
 
     # def get_service_num(self, obj):
     #     """
@@ -252,9 +258,10 @@ class HostSerializer(ModelSerializer):
         if is_sudo or username == "root":
             attrs["init_host"] = True
 
-        # 如果未传递 env，则指定默认环境
-        if not attrs.get("env") and not self.instance:
-            attrs["env"] = Env.objects.filter(id=1).first()
+        # 多环境架构：创建时环境继承自请求上下文，不接受客户端 env 值
+        # （serializer 必须传入 request context；更新时不变更主机所属环境）
+        if not self.instance:
+            attrs["env"] = get_request_env(self.context.get("request"))
         # 主机密码加密处理
         if attrs.get("password"):
             attrs["password"] = AESCryptor().encode(attrs.get("password"))
@@ -346,12 +353,17 @@ class HostDetailSerializer(ModelSerializer):
     history = HostOperateLogSerializer(
         source="hostoperatelog_set.all", many=True)
     deployment_information = serializers.SerializerMethodField()
+    env_name = serializers.SerializerMethodField(help_text="环境名称")
 
     class Meta:
         """ 元数据 """
         model = Host
         exclude = ("is_deleted", "agent_dir", "password", "host_name", "env",
                    "host_agent_error", "monitor_agent_error")
+
+    def get_env_name(self, obj):
+        """ 输出环境名称（多环境架构：前端按名称展示，不输出裸 env id） """
+        return obj.env.name if obj.env else None
 
     def get_deployment_information(self, obj):
         result_ls = []
@@ -431,9 +443,10 @@ class HostMaintenanceSerializer(HostIdsSerializer):
         HostOperateLog.objects.bulk_create(log_ls)
 
     def validate(self, attrs):
-        """ 校验列表中主机 '维护模式' 字段值是否正确 """
+        """ 校验列表中主机 '维护模式' 字段值是否正确（仅本环境主机） """
         queryset = Host.objects.filter(
             id__in=attrs.get("host_ids"),
+            env=get_request_env(self.context.get("request")),
             is_maintenance=attrs.get("is_maintenance"))
         if queryset.exists():
             status = "开启" if attrs.get("is_maintenance") else "关闭"
@@ -448,7 +461,9 @@ class HostMaintenanceSerializer(HostIdsSerializer):
         is_maintenance = validated_data.get("is_maintenance")
         status = "开启" if is_maintenance else "关闭"
         en_status = "open" if is_maintenance else "close"
-        host_queryset = Host.objects.filter(id__in=host_ids)
+        host_queryset = Host.objects.filter(
+            id__in=host_ids,
+            env=get_request_env(self.context.get("request")))
         host_ls = list(host_queryset.values("ip"))
 
         # 根据 is_maintenance 判断主机进入 / 退出维护模式
@@ -482,6 +497,7 @@ class HostAgentRestartSerializer(HostIdsSerializer):
         filter_host_ids = list(
             Host.objects.filter(
                 id__in=host_ids,
+                env=get_request_env(self.context.get("request")),
                 host_agent__in=[
                     str(Host.AGENT_RUNNING),
                     str(Host.AGENT_RESTART),
@@ -510,7 +526,9 @@ class HostBatchValidateSerializer(Serializer):
 
     def host_info_validate(self, host_data):
         """ 单个主机信息验证 """
-        host_serializer = HostSerializer(data=host_data)
+        # HostSerializer.validate 需从请求上下文继承环境，需透传 request
+        host_serializer = HostSerializer(
+            data=host_data, context={"request": self.context.get("request")})
         if host_serializer.is_valid():
             host_data["init_host"] = \
                 host_serializer.validated_data.get("init_host")
@@ -586,13 +604,14 @@ class HostInitSerializer(HostIdsSerializer):
     """ 主机初始化序列化类 """
 
     def create(self, validated_data):
-        """ 主机初始化 """
+        """ 主机初始化（仅本环境主机，跨环境 id 已在字段校验拒绝） """
         host_ids = validated_data.get("host_ids", [])
         for host_id in host_ids:
             init_host.delay(host_id)
-        # 下发任务后批量更新主机初始化状态
+        # 下发任务后批量更新主机初始化状态（限本环境）
         Host.objects.filter(
-            id__in=host_ids
+            id__in=host_ids,
+            env=get_request_env(self.context.get("request"))
         ).update(init_status=Host.INIT_EXECUTING)
         return validated_data
 
@@ -612,13 +631,14 @@ class HostReinstallSerializer(HostIdsSerializer):
     """ 主机重新安装序列化类 """
 
     def create(self, validated_data):
-        """ 主机重装 """
+        """ 主机重装（仅本环境主机） """
         host_ids = validated_data.get("host_ids", [])
+        env = get_request_env(self.context.get("request"))
         # 不重装监控agent
         for host_id in host_ids:
             deploy_agent.delay(host_id, need_monitor=False)
         Host.objects.filter(
-            id__in=host_ids
+            id__in=host_ids, env=env
         ).update(host_agent=Host.AGENT_DEPLOY_ING)
         return validated_data
 
@@ -627,12 +647,13 @@ class MonitorReinstallSerializer(HostIdsSerializer):
     """ 监控重新安装序列化类 """
 
     def create(self, validated_data):
-        """ 监控重装 """
+        """ 监控重装（仅本环境主机） """
         host_ids = validated_data.get("host_ids", [])
         user_name = self.context["request"].user.username
         for host_id in host_ids:
             reinstall_monitor_celery_task.delay(host_id, user_name)
         Host.objects.filter(
-            id__in=host_ids
+            id__in=host_ids,
+            env=get_request_env(self.context.get("request"))
         ).update(monitor_agent=Host.AGENT_DEPLOY_ING)
         return validated_data

@@ -247,12 +247,32 @@ class ManagerService:
         return True, cluster_obj
 
     def get_or_create_env(self):
+        """ 兜底环境：优先上游传入 env；否则取 default 环境，
+        不存在时创建（code 对齐幂等迁移，多环境架构 Task 14） """
         if self.env:
             return self.env
         queryset = Env.objects.filter(id=1)
         if queryset.exists():
             return queryset.first()
-        return Env.objects.create(id=1, name="default")
+        return Env.objects.create(id=1, name="default", code="default")
+
+    def get_service_env(self, ip):
+        """ 服务继承主机环境（spec #10）；主机缺失或未设置环境时
+        以 get_or_create_env 兜底 """
+        host = Host.objects.filter(ip=ip).first()
+        if host and host.env:
+            return host.env
+        return self.get_or_create_env()
+
+    def get_install_env(self):
+        """ 纳管安装历史环境：取被纳管服务所在主机的环境（纳管扫描
+        按环境发起，同批主机环境一致）；无主机环境时兜底 """
+        for data in self.data:
+            for ip in data.get("app_ip", []) or []:
+                host = Host.objects.filter(ip=ip).first()
+                if host and host.env:
+                    return host.env
+        return self.get_or_create_env()
 
     def create_database_one(self, data, main_obj):
         app_name = data.pop("app_name")
@@ -263,7 +283,6 @@ class ManagerService:
             app_name=app_name, app_version=app_version).first()
         data['service_port'] = self.update_port(app_obj, data)
         data['service_controllers'] = self.update_service_controllers(app_obj, data)
-        data['env'] = self.get_or_create_env()
         res, cls_obj = self.create_cluster(app_obj, data, app_name, real_ip_ls)
         if res:
             data["cluster"] = cls_obj
@@ -280,6 +299,8 @@ class ManagerService:
             copy_data["service_dependence"] = self.get_service_dependence(dependence, ip)
             copy_data['service'] = app_obj
             copy_data["ip"] = ip
+            # 服务继承主机环境（spec #10，多环境架构 Task 14）
+            copy_data['env'] = self.get_service_env(ip)
             # ToDo Role 和 vip的
             copy_data["service_role"] = ""
             install_detail_args = copy_data.pop("install_args")
@@ -295,7 +316,8 @@ class ManagerService:
             main_obj = MainInstallHistory.objects.create(
                 operator="admin",
                 operation_uuid=self.redis_key,
-                install_status=MainInstallHistory.INSTALL_STATUS_INSTALLING
+                install_status=MainInstallHistory.INSTALL_STATUS_INSTALLING,
+                env=self.get_install_env()
             )
             #                "dependence_instance": de_dc,
             #    "app_name": app,

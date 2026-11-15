@@ -54,6 +54,8 @@ def backup_service(**kwargs):
                 retain_path=backup_setting.retain_path,
                 file_name=f"{name}.tar.gz",
                 extend_field=extend_field,
+                # 备份历史落策略所属环境（多环境隔离，随 setting 传递）
+                env=backup_setting.env,
             )
 
         )

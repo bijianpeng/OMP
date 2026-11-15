@@ -2,6 +2,7 @@ import hashlib
 from uuid import uuid4
 from django.db import models
 
+from .env import Env
 
 
 class HostThreshold(models.Model):
@@ -17,7 +18,8 @@ class HostThreshold(models.Model):
     alert_level = models.CharField(
         max_length=32, null=False, blank=False, help_text="告警级别")
     create_date = models.DateTimeField(auto_now_add=True)
-    env_id = models.IntegerField(help_text="环境id", default=1)
+    env = models.ForeignKey(
+        Env, on_delete=models.CASCADE, verbose_name="环境", default=1)
 
     class Meta:
         db_table = 'omp_host_threshold'
@@ -48,7 +50,8 @@ class ServiceThreshold(models.Model):
     alert_level = models.CharField(
         "告警级别", max_length=32, null=False, blank=False)
     create_date = models.DateTimeField(auto_now_add=True)
-    env_id = models.IntegerField("环境id", default=1)
+    env = models.ForeignKey(
+        Env, on_delete=models.CASCADE, verbose_name="环境", default=1)
 
     class Meta:
         db_table = 'omp_service_threshold'
@@ -80,7 +83,8 @@ class ServiceCustomThreshold(models.Model):
     alert_level = models.CharField(
         "告警级别", max_length=32, null=False, blank=False)
     create_date = models.DateTimeField(auto_now_add=True)
-    env_id = models.IntegerField("环境id", default=1)
+    env = models.ForeignKey(
+        Env, on_delete=models.CASCADE, verbose_name="环境", default=1)
 
     class Meta:
         db_table = 'omp_service_custom_threshold'
@@ -110,7 +114,8 @@ class AlertRule(models.Model):
     """
     告警规则
     """
-    env_id = models.IntegerField("环境id", default=1)
+    env = models.ForeignKey(
+        Env, on_delete=models.CASCADE, verbose_name="环境", default=1)
     expr = models.TextField("监控指标表达式，报警语法", null=False, blank=False)
     threshold_value = models.FloatField("阈值的数值", null=False, blank=False)
     compare_str = models.CharField("比较符", max_length=64)

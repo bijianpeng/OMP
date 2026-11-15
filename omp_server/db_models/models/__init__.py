@@ -14,7 +14,7 @@ from .service import ServiceConnectInfo, ClusterInfo, Service, ServiceHistory
 from .threshold import HostThreshold, ServiceThreshold, ServiceCustomThreshold,AlertRule,Rule
 from .tool import ToolInfo, ToolExecuteMainHistory, ToolExecuteDetailHistory
 from .upload import UploadFileHistory
-from .user import UserProfile, OperateLog, UserLoginLog
+from .user import UserProfile, OperateLog, UserLoginLog, UserEnv
 from .upgrade import UpgradeHistory, UpgradeDetail, RollbackHistory, \
     RollbackDetail
 from .self_heal import SelfHealingSetting, SelfHealingHistory, WaitSelfHealing
@@ -64,6 +64,7 @@ __all__ = [
     UserProfile,
     OperateLog,
     UserLoginLog,
+    UserEnv,
     # 升级
     UpgradeHistory,
     UpgradeDetail,

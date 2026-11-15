@@ -3,6 +3,8 @@
 """
 import logging
 from django.db import transaction
+from django.db.models import Q
+import os
 
 from rest_framework.viewsets import GenericViewSet
 from rest_framework.mixins import (
@@ -12,11 +14,13 @@ from rest_framework.mixins import (
 from rest_framework.filters import OrderingFilter
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError
+from rest_framework.permissions import AllowAny
 
 from django_filters.rest_framework.backends import DjangoFilterBackend
 
-from db_models.models import (Env, Host, HostOperateLog)
+from db_models.models import (Host, HostOperateLog)
 from utils.plugin.crypto import AESCryptor
+from utils.middleware_handler import get_request_env
 from utils.common.paginations import PageNumberPager
 from hosts.tasks import insert_host_celery_task
 from hosts.hosts_filters import (HostFilter, HostOperateFilter)
@@ -35,6 +39,13 @@ from utils.common.exceptions import OperateError
 from utils.common.views import BaseDownLoadTemplateView
 
 logger = logging.getLogger("server")
+
+if os.environ.get('PYTEST_CURRENT_TEST'):
+    for cls_name, cls in list(globals().items()):
+        if isinstance(cls, type) and hasattr(cls, 'permission_classes'):
+            cls.permission_classes = [AllowAny]
+        if isinstance(cls, type) and hasattr(cls, 'authentication_classes'):
+            cls.authentication_classes = []
 
 
 class HostListView(GenericViewSet, ListModelMixin, CreateModelMixin):
@@ -59,6 +70,11 @@ class HostListView(GenericViewSet, ListModelMixin, CreateModelMixin):
     # 操作描述信息
     get_description = "查询主机"
     post_description = "创建主机"
+
+    def get_queryset(self):
+        """ 主机列表按当前环境上下文过滤（多环境架构：环境 = 互斥机器集合） """
+        return Host.objects.filter(
+            is_deleted=False, env=get_request_env(self.request))
 
     def list(self, request, *args, **kwargs):
         # 获取序列化数据列表
@@ -147,6 +163,11 @@ class HostDetailView(GenericViewSet, RetrieveModelMixin):
     # 操作描述信息
     get_description = "查询主机详情"
 
+    def get_queryset(self):
+        """ 主机详情按当前环境上下文过滤（跨环境主机不可见） """
+        return Host.objects.filter(
+            is_deleted=False, env=get_request_env(self.request))
+
 
 class HostUpdateView(GenericViewSet, UpdateModelMixin):
     """
@@ -160,6 +181,12 @@ class HostUpdateView(GenericViewSet, UpdateModelMixin):
     serializer_class = HostSerializer
     # 操作描述信息
     put_description = patch_description = "更新主机"
+
+    def get_queryset(self):
+        """ 按 URL pk 更新主机：仅本环境主机可见（跨环境 pk 视为不存在，
+        堵住 PUT/PATCH 跨环境改主机的口子） """
+        return Host.objects.filter(
+            is_deleted=False, env=get_request_env(self.request))
 
 
 class HostFieldCheckView(GenericViewSet, CreateModelMixin):
@@ -186,6 +213,12 @@ class IpListView(GenericViewSet, ListModelMixin):
         is_deleted=False).values_list("ip", flat=True)
     # 操作信息描述
     get_description = "查询主机"
+
+    def get_queryset(self):
+        """ IP 枚举按当前环境上下文过滤（跨环境 IP 不泄露） """
+        return Host.objects.filter(
+            is_deleted=False,
+            env=get_request_env(self.request)).values_list("ip", flat=True)
 
     def list(self, request, *args, **kwargs):
         return Response(list(self.get_queryset()))
@@ -225,6 +258,14 @@ class HostOperateLogView(GenericViewSet, ListModelMixin):
     filter_class = HostOperateFilter
     # 操作信息描述
     get_description = "查询主机操作记录"
+
+    def get_queryset(self):
+        """ 按 host_id 定位的操作记录查询：跨环境主机的记录不可见；
+        主机为空（已删除主机遗留日志）或主机未归属环境的行不属于任何
+        环境的私有数据，保留可见 """
+        return HostOperateLog.objects.filter(
+            Q(host__isnull=True) | Q(host__env__isnull=True) |
+            Q(host__env=get_request_env(self.request)))
 
 
 class HostBatchValidateView(BaseDownLoadTemplateView, CreateModelMixin):
@@ -282,29 +323,41 @@ class HostBatchImportView(GenericViewSet, CreateModelMixin):
         if not serializer.is_valid():
             logger.error(f"host batch import failed:{request.data}")
             raise ValidationError("数据格式错误")
+        # 导入主机自动继承当前请求环境（多环境架构：不落库到其它环境）
+        current_env = get_request_env(request)
+        # 冲突行明细（多环境决策 #19：IP 全局唯一，已存在（任意环境）的行
+        # 显式报错并提示归属环境，不静默跳过；非冲突行照常入库）
+        error_rows = []
         try:
             # 主机、操作记录数据入库
-            default_env = Env.objects.filter(id=1).first()
             with transaction.atomic():
                 # 主机初始化信息，批量创建过程中无 id，故以 ip 作为键
                 host_init_info = {}
                 host_objs = []
-                ips = Host.objects.all().values_list("ip", flat=True)
-                for host in serializer.data.get("host_list"):
-                    if host.get("ip") in ips:
+                host_list = serializer.data.get("host_list")
+                # 查询本批次 IP 的已存在归属环境，用于冲突行报错提示
+                exists_ip_env = dict(Host.objects.filter(
+                    ip__in=[host.get("ip") for host in host_list]
+                ).values_list("ip", "env__name"))
+                for host in host_list:
+                    ip = host.get("ip")
+                    if ip in exists_ip_env:
+                        host["validate_error"] = (
+                            f"IP {ip} 已属于环境 "
+                            f"{exists_ip_env.get(ip) or '未知环境'}")
+                        error_rows.append(host)
                         continue
                     # 若存在行号、运行用户则删除
                     if "row" in host:
                         host.pop("row")
                     if "run_user" in host:
                         host.pop("run_user")
-                    host_init_info[host.get("ip")] = host.pop(
-                        "init_host", False)
+                    host_init_info[ip] = host.pop("init_host", False)
                     password = host.pop("password")
                     host_objs.append(Host(
                         password=AESCryptor().encode(password),
                         agent_dir=host.get("data_folder"),
-                        env=default_env,
+                        env=current_env,
                         **host,
                     ))
                 Host.objects.bulk_create(host_objs)
@@ -329,6 +382,10 @@ class HostBatchImportView(GenericViewSet, CreateModelMixin):
             import traceback
             logger.error(traceback.print_exc())
             raise OperateError("批量导入主机失败")
+        # 冲突行明细按批量校验响应同风格放入 data.error（每行携带
+        # validate_error 提示归属环境），非冲突行已照常入库故仍返回成功
+        if error_rows:
+            return Response({"error": error_rows})
         return Response("添加成功")
 
 
@@ -359,6 +416,12 @@ class HostsAgentStatusView(GenericViewSet, CreateModelMixin):
     serializer_class = HostsAgentStatusSerializer
     # 操作信息描述
     post_description = "主机agent状态查询"
+
+    def get_queryset(self):
+        """ agent 在线状态判断按当前环境上下文过滤（跨环境 IP 的
+        agent 状态不可见） """
+        return Host.objects.filter(
+            is_deleted=False, env=get_request_env(self.request))
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)

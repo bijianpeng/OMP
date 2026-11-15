@@ -1,5 +1,6 @@
 from django.db import models
 from db_models.mixins import TimeStampMixin
+from .env import Env
 
 
 class ModuleChoices(models.TextChoices):
@@ -51,6 +52,10 @@ class ExecutionRecord(TimeStampMixin):
     )
     count = models.IntegerField("服务数量", default=0)
     end_time = models.DateTimeField("更新时间", null=True)
+    env = models.ForeignKey(
+        Env, null=True, blank=True, default=1,
+        on_delete=models.SET_NULL,
+        verbose_name="环境", help_text="环境")
 
     class Meta:
         db_table = "omp_execution_record"

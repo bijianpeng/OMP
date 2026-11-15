@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # Project: tasks
-# Author: jon.liu@yunzhihui.com
+# Author: omp
 # Create time: 2021-09-12 11:54
 # IDE: PyCharm
 # Version: 1.0
@@ -38,6 +38,7 @@ from utils.parse_config import HOSTNAME_PREFIX
 from utils.plugin.install_ntpdate import InstallNtpdate
 from omp_server.settings import PROJECT_DIR
 from concurrent.futures import ThreadPoolExecutor
+from utils.plugin.public_utils import local_cmd
 
 # 屏蔽celery任务日志中的paramiko日志
 logging.getLogger("paramiko").setLevel(logging.WARNING)
@@ -419,13 +420,7 @@ class UninstallHosts(object):
     @staticmethod
     def cmd(command):
         """执行本地shell命令"""
-        p = subprocess.Popen(
-            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True
-        )
-        stdout, stderr = p.communicate()
-        _out, _err, _code = stdout.decode(
-            "utf8"), stderr.decode("utf8"), p.returncode
-        return _out, _err, _code
+        return local_cmd(command)
 
     def delete_salt_key(self, key_list):
         """删除所有的salt-key"""
@@ -433,7 +428,7 @@ class UninstallHosts(object):
         salt_key_path = os.path.join(PROJECT_DIR, "component/env/bin/salt-key")
         salt_config_path = os.path.join(PROJECT_DIR, "config/salt")
         for item in key_list:
-            _out, _err, _code = self.cmd(
+            _out, _err, _code = UninstallHosts.cmd(
                 f"{python_path} {salt_key_path} -y -d '{item}' -c {salt_config_path}"
             )
             if _code != 0:
@@ -541,17 +536,22 @@ class UninstallHosts(object):
         _uninstall_flag, _uninstall_msg = self.execute_uninstall(host_obj_list=self.all_host,
                                                                  thread_name_prefix="uninstall_agent_",
                                                                  function=self.del_single_agent)
-        ips = self.all_host.values_list("ip", flat=True)
+        ips = list(self.all_host.values_list("ip", flat=True))
         pro_obj = PrometheusUtils()
-        write_str = []
-        node_path = os.path.join(
-            pro_obj.prometheus_targets_path, "nodeExporter_all.json")
-        for node in pro_obj.get_dic_from_yaml(node_path):
-            if node.get("targets", [""])[0].split(":")[0] in ips:
+        # 节点 targets 按环境拆分为 {env_code}_nodeExporter.json（Task 11），
+        # 按待卸载主机所属环境的 Env.code 逐一清理，其它环境文件不受影响
+        env_codes = set(self.all_host.values_list("env__code", flat=True))
+        for env_code in env_codes:
+            node_path = pro_obj.get_node_targets_file(env_code)
+            if not os.path.exists(node_path):
                 continue
-            write_str.append(node)
-        with open(node_path, "w") as f2:
-            json.dump(write_str, f2, ensure_ascii=False, indent=4)
+            write_str = []
+            for node in pro_obj.get_dic_from_yaml(node_path):
+                if node.get("targets", [""])[0].split(":")[0] in ips:
+                    continue
+                write_str.append(node)
+            with open(node_path, "w") as f2:
+                json.dump(write_str, f2, ensure_ascii=False, indent=4)
         time.sleep(2)
         reload_prometheus_url = "http://localhost:19011/-/reload"
         requests.post(reload_prometheus_url,

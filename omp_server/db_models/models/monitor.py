@@ -96,7 +96,8 @@ class GrafanaMainPage(models.Model):
 
 class AlertSendWaySetting(models.Model):
     used = models.BooleanField("是否启用", default=False)
-    env_id = models.IntegerField("环境id", default=0)
+    env = models.ForeignKey(
+        Env, on_delete=models.CASCADE, verbose_name="环境", default=1)
     way_name = models.CharField("告警推送服务名称", max_length=64)
     server_url = models.TextField("告警推送服务url", default="")
     way_token = models.CharField("服务token", max_length=255, default="")
@@ -139,11 +140,15 @@ class AlertSendWaySetting(models.Model):
         }
         if obj:
             kwargs.update(server_url=obj.server_url, used=obj.used)
-            cls.objects.create(
-                env_id=env_id,
-                way_name="email",
-                server_url=obj.server_url,
-                used=obj.used)
+            # env 改 FK 后仅向真实存在的环境落库；调用方未传 env_id
+            # （视图默认 0）时跳过 create，避免再产生 env_id=0 脏数据行
+            # （返回值不受影响，仍回填已有配置）
+            if Env.objects.filter(id=env_id).exists():
+                cls.objects.create(
+                    env_id=env_id,
+                    way_name="email",
+                    server_url=obj.server_url,
+                    used=obj.used)
         return kwargs
 
     def get_self_dict(self):

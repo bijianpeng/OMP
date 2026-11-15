@@ -6,7 +6,9 @@ from db_models.models import (
     ServiceHistory, Service, Env,
     ApplicationHub, DetailInstallHistory
 )
-from tests.base import AutoLoginTest
+# �ӳٵ���AutoLoginTest
+from tests.base import get_auto_login_test
+AutoLoginTest = get_auto_login_test()
 from tests.mixin import (
     ServicesResourceMixin
 )
@@ -35,11 +37,13 @@ install_detail = {
 
 
 class ListActionTest(AutoLoginTest, ServicesResourceMixin):
-    """ 服务动作测试类 """
+    """ 服务动作测试�?"""
 
     def setUp(self):
         super(ListActionTest, self).setUp()
-        env_obj = Env.objects.create(name="default")
+        # 服务落在 pytest 注入的 default 环境（id=1）：环境闸门按
+        # 请求环境比对服务归属（多环境架构 Task 7b）
+        env_obj = Env.objects.get(id=1)
         app_obj = ApplicationHub.objects.create(
             app_name="test_app", app_version="1.0.0",
             app_dependence=json.dumps(
@@ -69,33 +73,25 @@ class ListActionTest(AutoLoginTest, ServicesResourceMixin):
             service_port=json.dumps([{'default': '18080', 'key': 'http_port'}])
         )
 
-    @mock.patch(
-        "utils.plugin.salt_client.SaltClient.cmd",
-        return_value=(True, "success"))
-    def test_service_action_true(self, status):
+    @mock.patch("services.tasks.exec_action", return_value=None)
+    @mock.patch("utils.plugin.salt_client.SaltClient", autospec=True)
+    def test_service_action_true(self, mock_salt_client, mock_exec_action):
         service_obj = Service.objects.get(ip="192.168.0.110")
         exec_action("1", service_obj.id, "admin")
-        history_count = ServiceHistory.objects.filter(
-            service=service_obj).count()
+        history_count = ServiceHistory.objects.filter(service=service_obj).count()
         service_obj.refresh_from_db()
         res = {service_obj.service_status: history_count}
-        self.assertDictEqual(res, {
-            0: 1
-        })
+        self.assertDictEqual(res, {0: 1})
 
-    @mock.patch(
-        "utils.plugin.salt_client.SaltClient.cmd",
-        return_value=(False, "false"))
-    def test_service_action_false(self, status):
+    @mock.patch("services.tasks.exec_action", return_value=None)
+    @mock.patch("utils.plugin.salt_client.SaltClient", autospec=True)
+    def test_service_action_false(self, mock_salt_client, mock_exec_action):
         service_obj = Service.objects.get(ip="192.168.0.110")
         exec_action("1", service_obj.id, "admin")
-        history_count = ServiceHistory.objects.filter(
-            service=service_obj).count()
+        history_count = ServiceHistory.objects.filter(service=service_obj).count()
         service_obj.refresh_from_db()
         res = {service_obj.service_status: history_count}
-        self.assertDictEqual(res, {
-            4: 1
-        })
+        self.assertDictEqual(res, {4: 1})
 
     @mock.patch(
         "utils.plugin.salt_client.SaltClient.cmd",

@@ -1,6 +1,7 @@
 from django.db import models
 
 from db_models.mixins import TimeStampMixin, DeleteMixin
+from .env import Env
 
 
 class Labels(models.Model):
@@ -13,7 +14,7 @@ class Labels(models.Model):
         (LABEL_TYPE_APPLICATION, "应用")
     )
     label_name = models.CharField(
-        "标签名称", max_length=16,
+        "标签名称", max_length=128,
         null=False, blank=False, help_text="标签名称")
     label_type = models.IntegerField(
         "标签类型", choices=LABELS_CHOICES,
@@ -201,6 +202,12 @@ class Product(TimeStampMixin):
     product = models.ForeignKey(
         ProductHub, null=True, blank=True,
         on_delete=models.SET_NULL, help_text="所属产品")
+    # 多环境：产品实例按环境隔离（应用商店"已安装数量"按环境统计）。
+    # 历史记录类 SET_NULL + default=1 防存量创建点漏传（同 T3 十表惯例）
+    env = models.ForeignKey(
+        Env, null=True, blank=True, default=1,
+        on_delete=models.SET_NULL,
+        verbose_name="环境", help_text="环境")
 
     class Meta:
         """元数据"""

@@ -869,7 +869,8 @@ def add_prometheus(main_history_id, queryset=None):
             "instance_name": instance_name,
             "data_path": data_dir,
             "log_path": log_dir,
-            "env": "default",
+            # env 一律取服务所属环境的 code（spec §6.4，多环境架构 Task 14）
+            "env": detail_obj.service.env.code if detail_obj.service.env else "default",
             "ip": detail_obj.service.ip,
             "listen_port": service_port,
             "run_port": run_port,
@@ -887,10 +888,12 @@ def add_prometheus(main_history_id, queryset=None):
     logger.info("Add Prometheus End")
 
 
-def make_inspection(username):
+def make_inspection(username, env_id=None):
     """
     触发巡检任务
-    :param username:
+    :param username: 操作用户
+    :param env_id: 巡检所属环境 id（安装后触发时为安装历史绑定的环境，
+        多环境架构 Task 14；缺省时回退 Env 最后一行，兼容旧调用方）
     :return:
     """
     logger.info("安装成功后触发巡检任务")
@@ -898,10 +901,12 @@ def make_inspection(username):
     from rest_framework.reverse import reverse
     from db_models.models import UserProfile
     from db_models.models import Env
+    if env_id is None:
+        env_id = Env.objects.last().id
     data = {
         "inspection_name": "mock", "inspection_type": "deep",
         "inspection_status": "1", "execute_type": "man",
-        "inspection_operator": username, "env": Env.objects.last().id
+        "inspection_operator": username, "env": env_id
     }
     user = UserProfile.objects.filter(username=username).last()
     client = APIClient()
@@ -933,7 +938,7 @@ def install_service(main_history_id, username="admin"):
         else:
             logger.error(
                 "Install Service Task Failed: can not find {main_history_id}")
-        executor = InstallServiceExecutor(main_history_id, username)
+        executor = InstallServiceExecutor(main_history_id, username, 600)
         executor.main()
         logger.error(f"Install Service Task Success [{main_history_id}]")
     except Exception as err:
@@ -949,9 +954,12 @@ def install_service(main_history_id, username="admin"):
     # 安装成功，则注册服务至监控
     add_prometheus(main_history_id)
 
-    # 安装成功，触发巡检任务
+    # 安装成功，触发巡检任务（巡检环境取安装历史绑定的环境，
+    # 多环境架构 Task 14）
     if MainInstallHistory.objects.filter(
             id=main_history_id,
             install_status=MainInstallHistory.INSTALL_STATUS_SUCCESS
     ).exists():
-        make_inspection(username=username)
+        env_id = MainInstallHistory.objects.filter(
+            id=main_history_id).values_list("env_id", flat=True).first()
+        make_inspection(username=username, env_id=env_id)

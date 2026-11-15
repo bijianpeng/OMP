@@ -26,6 +26,8 @@ from rest_framework.authentication import (
 from users.urls import router as users_router
 from users.views import JwtAPIView
 
+from env_manage.urls import urlpatterns as env_urlpatterns
+
 from hosts.urls import router as hosts_router
 from app_store.urls import router as app_store_router
 from promemonitor.urls import router as promemonitor_router
@@ -40,6 +42,7 @@ from service_upgrade.urls import upgrade_urlpatterns, rollback_urlpatterns
 urlpatterns_inside = [
     path("login/", JwtAPIView.as_view(), name="login"),
     path("users/", include(users_router.urls), name="users"),
+    path("env/", include(env_urlpatterns), name="env"),
     path("hosts/", include(hosts_router.urls), name="hosts"),
     path("promemonitor/",
          include(promemonitor_router.urls), name="promemonitor"),

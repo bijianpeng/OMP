@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # Project: install_utils
-# Author: jon.liu@yunzhihui.com
+# Author: omp
 # Create time: 2021-10-24 14:11
 # IDE: PyCharm
 # Version: 1.0
@@ -29,31 +29,42 @@ from db_models.models import (
     ClusterInfo,
     ServiceConnectInfo,
     MainInstallHistory,
-    DetailInstallHistory
+    DetailInstallHistory,
+    PreInstallHistory
 )
 from app_store.tasks import install_service
+from app_store.new_install_utils import (
+    merge_ports_into_install_args, standardize_detail_args)
 from utils.common.exceptions import GeneralError
 # from utils.plugin import public_utils
 from utils.plugin.salt_client import SaltClient
 
+# 定义数据目录的占位符
 DIR_KEY = "{data_path}"
 
 
 def make_lst_unique(lst, key_1, key_2):
     """
-    去重列表内的字典
+    对列表内的字典进行去重操作。
+
+    示例:
         lst = [{"name": "1", "version": "1"}, {"name": "1", "version": "1"}]
         lst = make_lst_unique(lst, "name", "version")
-    :param lst: 被操作对象
-    :param key_1: 关键key1
-    :param key_2: 关键key2
-    :return:
+
+    :param lst: 包含字典的列表，是被操作的对象
+    :param key_1: 用于去重的第一个关键键名
+    :param key_2: 用于去重的第二个关键键名
+    :return: 去重后的列表
     """
+    # 用于存储唯一标识的字典
     unique_dic = dict()
+    # 存储去重后结果的列表
     ret_lst = list()
     for el in lst:
+        # 组合两个关键键的值作为唯一标识
         _unique = el.get(key_1, "") + "_" + el.get(key_2, "")
         if _unique in unique_dic:
+            # 若唯一标识已存在，则跳过当前元素
             continue
         ret_lst.append(el)
         unique_dic[_unique] = True
@@ -62,29 +73,35 @@ def make_lst_unique(lst, key_1, key_2):
 
 def make_editable(element):
     """
-    处理参数是否可编辑
+    处理参数字典中的 editable 字段，确保其为布尔类型。
+
     :param element: 参数字典
-    :return:
     """
     if element.get("editable") is False or \
             str(element.get("editable")).lower() == "false":
+        # 若 editable 为 False 或字符串 "false"，则将其设为布尔 False
         element["editable"] = False
     else:
+        # 否则将其设为布尔 True
         element["editable"] = True
 
 
 def make_app_install_args(app_install_args):
     """
-    构建安装参数
-    :param app_install_args: 服务安装参数
+    构建服务安装参数，处理包含 DIR_KEY 的默认值并设置 editable 字段。
+
+    :param app_install_args: 服务安装参数列表
     :type app_install_args: list
-    :return:
+    :return: 处理后的服务安装参数列表
     """
     for el in app_install_args:
         if isinstance(el.get("default"), str) and \
                 DIR_KEY in el.get("default"):
+            # 移除默认值中的 DIR_KEY
             el["default"] = el["default"].replace(DIR_KEY, "")
+            # 记录 DIR_KEY 标记
             el["dir_key"] = DIR_KEY
+        # 处理 editable 字段
         make_editable(el)
     return app_install_args
 
@@ -92,24 +109,39 @@ def make_app_install_args(app_install_args):
 class DataJson(object):
     """ 生成data.json数据 """
 
-    def __init__(self, operation_uuid):
+    def __init__(self, operation_uuid, env_id=None):
         """
         data.json数据生成方法
+
         :param operation_uuid: 唯一操作uuid
         :type operation_uuid: str
+        :param env_id: 安装所属环境 id（多环境架构：按环境过滤，
+            避免混入其它环境的服务/主机；None 时保持存量全量行为，
+            兼容历史调用方）
+        :type env_id: int
         """
         self.operation_uuid = operation_uuid
+        self.env_id = env_id
 
     def get_ser_install_args(self, obj):    # NOQA
         """
-        获取服务的安装参数
-        :param obj: Service
+        获取服务的安装参数和部署模式。
+
+        :param obj: Service 模型实例
         :type obj: Service
-        :return:
+        :return: 包含安装参数和部署模式的字典
         """
+        # 从 DetailInstallHistory 表中获取该服务的部署详情
         deploy_detail = DetailInstallHistory.objects.get(service=obj)
+        # 从部署详情中获取安装参数
+        # 兼容两种参数键名：老 schema 前端 payload 原样落库为
+        # app_install_args（存量数据）；写入侧标准化
+        # （new_install_utils.standardize_detail_args）后新数据为
+        # install_args（与 install_exec unzip 键名兼容 bd017fe 同模式）
         install_args = \
-            deploy_detail.install_detail_args.get("app_install_args")
+            deploy_detail.install_detail_args.get("app_install_args") or \
+            deploy_detail.install_detail_args.get("install_args")
+        # 从部署详情中获取部署模式
         deploy_mode = \
             deploy_detail.install_detail_args.get("deploy_mode")
         return {
@@ -119,10 +151,11 @@ class DataJson(object):
 
     def parse_single_service(self, obj):
         """
-        解析单个服务数据
-        :param obj: Service
+        解析单个服务数据，包含服务的基本信息和安装参数。
+
+        :param obj: Service 模型实例
         :type obj: Service
-        :return:
+        :return: 包含服务信息的字典
         """
         _ser_dic = {
             "ip": obj.ip,
@@ -131,25 +164,37 @@ class DataJson(object):
             "cluster_name": obj.cluster.cluster_name if obj.cluster else None,
             "ports": json.loads(obj.service_port) if obj.service_port else [],
         }
+        # 获取服务的安装参数和部署模式
         _others = self.get_ser_install_args(obj)
+        # 将安装参数和部署模式更新到服务信息字典中
         _ser_dic.update(_others)
+        # 合并 ports 到 install_args 末尾(幂等),保证目标机 install.py
+        # 能从 self.install_args 取到端口字段
+        _ser_dic["install_args"] = merge_ports_into_install_args(
+            _ser_dic.get("install_args") or [],
+            _ser_dic.get("ports") or [],
+        )
         return _ser_dic
 
     def make_data_json(self, json_lst):
         """
-        创建data.json数据文件
+        创建data.json数据文件。
+
         :param json_lst: 服务及分布信息组成的列表
         :type json_lst: list
         :return:
         """
+        # 拼接 data.json 文件的路径
         _path = os.path.join(
             PROJECT_DIR,
             "package_hub/data_files",
             f"{self.operation_uuid}.json"
         )
         if not os.path.exists(os.path.dirname(_path)):
+            # 若文件目录不存在，则创建该目录
             os.makedirs(os.path.dirname(_path))
         with open(_path, "w", encoding="utf8") as fp:
+            # 将服务信息列表以 JSON 格式写入文件
             fp.write(json.dumps(json_lst, indent=2, ensure_ascii=False))
 
     def run(self):
@@ -158,9 +203,17 @@ class DataJson(object):
         :return:
         """
         # step1: 获取所有的服务列表
-        all_ser_lst = Service.objects.all()
+        # 多环境按安装所属环境过滤，避免 data.json 混入其它环境
+        # 的服务/主机（pre 阶段会按 json 的 ip 建记录并 cp json，
+        # 全量数据会造成跨环境污染）；env_id 为 None 时保持存量
+        # 全量行为（兼容历史调用方）
+        if self.env_id:
+            all_ser_lst = Service.objects.filter(env_id=self.env_id)
+        else:
+            all_ser_lst = Service.objects.all()
         json_lst = list()
         for item in all_ser_lst:
+            # 解析每个服务的数据并添加到列表中
             json_lst.append(self.parse_single_service(obj=item))
         # step2: 生成data.json
         self.make_data_json(json_lst=json_lst)
@@ -168,25 +221,28 @@ class DataJson(object):
 
 class SerDependenceParseUtils(object):
     """
-    依赖解决工具类
+    依赖解决工具类，用于解析服务的依赖关系
     """
 
     def __init__(self, parse_name, parse_version):
         """
         初始化对象, 服务级别的解析，包含自研服务和基础组件服务
-        :param parse_name: 要解析的名称，服务
+
+        :param parse_name: 要解析的服务名称
         :type parse_name: str
-        :param parse_version: 要解析的版本
+        :param parse_version: 要解析的服务版本
         :type parse_version: str
         """
         self.parse_name = parse_name
         self.parse_version = parse_version
+        # 生成唯一标识，用于避免递归解析时的重复处理
         self.unique_key = self.parse_name + self.parse_version
 
     def get_newest_ser(self):
         """
         获取最新的服务对象，同服务，同版本
-        :return: ApplicationHub
+
+        :return: ApplicationHub 模型实例
         """
         return ApplicationHub.objects.filter(
             app_name=self.parse_name,
@@ -197,10 +253,12 @@ class SerDependenceParseUtils(object):
     def get_ser_instances(self, obj):  # NOQA
         """
         查看服务是否已经被安装以及应用商店内是否具备安装条件
+
         返回值含义：
             cluster_info：当前服务的集群信息
             instance_info：当前服务的实例对象信息
             is_pack_exist：当前服务的安装包是否存在
+
         :param obj: ApplicationHub实例
         :type obj: ApplicationHub
         :return: cluster_info, instance_info, is_pack_exist
@@ -224,52 +282,64 @@ class SerDependenceParseUtils(object):
                 obj.app_package.package_name
             )
             if os.path.exists(path):
+                # 若安装包文件存在，则标记安装包存在
                 is_pack_exist = True
         return cluster_info, instance_info, is_pack_exist
 
     def get_deploy_mode(self, obj):     # NOQA
         """
         解析服务的部署模式信息
+
+        示例返回值：
         [
           {
             "key": "single",
             "name": "单实例"
           }
         ]
+
         :param obj: 服务对象
         :type obj: ApplicationHub
-        :return: list()
+        :return: 包含部署模式信息的列表
         """
         if not obj.extend_fields or not obj.extend_fields.get("deploy", {}):
+            # 若服务未配置部署模式信息，默认返回单实例模式
             return [{"key": "single", "name": "单实例"}]
         deploy_info = obj.extend_fields.get("deploy", {})
         ret_lst = list()
         if "single" in deploy_info:
+            # 若存在单实例部署信息，添加到结果列表
             ret_lst.extend(deploy_info["single"])
         if "complex" in deploy_info:
+            # 若存在复杂部署信息，添加到结果列表
             ret_lst.extend(deploy_info["complex"])
         return ret_lst
 
     def get_is_base_env(self, obj):     # NOQA
         """
         确定当前服务是否为基础环境：如 jdk 等
+
         :param obj: 服务对象
         :type obj: ApplicationHub
-        :return:
+        :return: 布尔值，表示是否为基础环境
         """
         if not obj.extend_fields:
+            # 若服务未配置扩展字段，默认不是基础环境
             return False
         return obj.extend_fields.get("base_env", False)
 
     def get_dependence(self, lst, dep):
         """
         解决服务依赖关系核心方法
+
         :param lst: 存储结果的列表
         :param dep: 服务依赖关系列表
-        :return: list()
+        :return: 包含服务依赖信息的列表
         """
+        # 存储已处理的服务唯一标识的列表
         unique_key_lst = list()
         for inner in dep:
+            # 获取依赖服务的名称和版本
             _name, _version = inner.get("name"), inner.get("version")
             _app = ApplicationHub.objects.filter(
                 app_name=_name,
@@ -325,6 +395,7 @@ class SerDependenceParseUtils(object):
             if not _app.app_dependence:
                 continue
             _app_dependence = json.loads(_app.app_dependence)
+            # 递归处理依赖服务的依赖关系
             self.get_dependence(
                 lst, dep=_app_dependence
             )
@@ -332,39 +403,46 @@ class SerDependenceParseUtils(object):
     def run_ser(self):
         """
         解析服务的依赖关系入口
+
         :return: 服务依赖关系列表
         """
         _ser = self.get_newest_ser()
         if not _ser or not _ser.app_dependence:
             return list()
+        # 解析服务的依赖关系列表
         app_dep_lst = json.loads(_ser.app_dependence)
         ret_lst = list()
+        # 处理服务的依赖关系
         self.get_dependence(lst=ret_lst, dep=app_dep_lst)
+        # 对依赖关系列表进行去重操作
         ret_lst = make_lst_unique(ret_lst, "name", "version")
         return ret_lst
 
 
 class ProDependenceParseUtils(object):
     """
-    依赖解决工具类
+    依赖解决工具类，用于解析产品的依赖关系
     """
 
     def __init__(self, parse_name, parse_version):
         """
         初始化对象, 产品级别的解析
+
         :param parse_name: 要解析的产品、应用名称
         :param parse_version: 要解析的版本
         """
         self.parse_name = parse_name
         self.parse_version = parse_version
+        # 生成唯一标识，用于避免递归解析时的重复处理
         self.unique_key = self.parse_name + self.parse_version
 
     def get_pro_instances(self, obj):   # NOQA
         """
         获取产品的实例信息，被依赖产品是否已经被安装
+
         :param obj: 应用实例对象
         :type obj: ProductHub
-        :return:
+        :return: 包含产品实例信息的列表
         """
         ret_lst = Product.objects.filter(
             product__pro_name=obj.pro_name
@@ -374,21 +452,24 @@ class ProDependenceParseUtils(object):
     def get_dependence(self, lst, dep):
         """
         解决产品依赖关系核心方法
+
         :param lst: 存储结果的列表
         :type lst: list
         :param dep: 服务依赖关系列表
         :type dep: list
-        :return: list()
+        :return: 包含产品依赖信息的列表
         """
+        # 存储已处理的产品唯一标识的列表
         unique_key_lst = list()
         for inner in dep:
+            # 获取依赖产品的名称和版本
             _name, _version = inner.get("name"), inner.get("version")
             _pro = ProductHub.objects.filter(
                 pro_name=_name,
                 pro_version=_version,
                 is_release=True
             ).order_by("created").last()
-            # 定义服务&版本唯一标准，防止递归错误
+            # 定义产品&版本唯一标准，防止递归错误
             unique_key = str(_name) + str(_version)
             # 如果当前产品和需要被解析的源产品重叠，那么则跳过
             # 如果当前产品的依赖关系已经被解决，那么则跳过
@@ -413,6 +494,7 @@ class ProDependenceParseUtils(object):
             if not _pro.pro_dependence:
                 continue
             _pro_dependence = json.loads(_pro.pro_dependence)
+            # 递归处理依赖产品的依赖关系
             self.get_dependence(
                 lst, dep=_pro_dependence
             )
@@ -420,7 +502,8 @@ class ProDependenceParseUtils(object):
     def get_newest_pro(self):
         """
         获取最新的产品对象，同产品，同版本
-        :return: ProductHub
+
+        :return: ProductHub 模型实例
         """
         return ProductHub.objects.filter(
             pro_name=self.parse_name,
@@ -431,13 +514,16 @@ class ProDependenceParseUtils(object):
     def run_pro(self):
         """
         解析产品的依赖关系入口
+
         :return: 产品关系依赖列表
         """
         _pro = self.get_newest_pro()
         if not _pro or not _pro.pro_dependence:
             return list()
         ret_lst = list()
+        # 处理产品的依赖关系
         self.get_dependence(ret_lst, json.loads(_pro.pro_dependence))
+        # 对依赖关系列表进行去重操作
         ret_lst = make_lst_unique(ret_lst, "name", "version")
         return ret_lst
 
@@ -448,9 +534,10 @@ class ServiceArgsSerializer(object):
     def get_app_dependence(self, obj):  # NOQA
         """
         解析服务级别的依赖关系
+
         :param obj: 服务对象
         :type obj: ApplicationHub
-        :return:
+        :return: 服务依赖关系列表
         """
         ser = SerDependenceParseUtils(obj.app_name, obj.app_version)
         return ser.run_ser()
@@ -458,23 +545,26 @@ class ServiceArgsSerializer(object):
     def get_app_port(self, obj):    # NOQA
         """
         获取app的端口
+
         :param obj: 服务对象
         :type obj: ApplicationHub
-        :return: list()
+        :return: 包含端口信息的列表
         """
         if not obj.app_port:
             return []
         port_lst = json.loads(obj.app_port)
         for item in port_lst:
+            # 处理端口信息的 editable 字段
             make_editable(item)
         return port_lst
 
     def get_app_install_args(self, obj):  # NOQA
         """
         解析安装参数信息
+
         :param obj: 服务对象
         :type obj: ApplicationHub
-        :return: list()
+        :return: 包含安装参数信息的列表
         """
         # 标记安装过程中涉及到的数据目录，通过此标记给前端
         # 给与前端提示信息，此标记对应于主机中的数据目录 data_folder
@@ -486,15 +576,18 @@ class ServiceArgsSerializer(object):
     def get_deploy_mode(self, obj):  # NOQA
         """
         解析部署模式信息
+
+        示例返回值：
         [
           {
             "key": "single",
             "name": "单实例"
           }
         ]
+
         :param obj: 服务对象
         :type obj: ApplicationHub
-        :return:
+        :return: 包含部署模式信息的列表
         """
         # 如果服务未配置部署模式相关信息，那么默认为单实例模式
         ser = SerDependenceParseUtils(obj.app_name, obj.app_version)
@@ -502,10 +595,11 @@ class ServiceArgsSerializer(object):
 
     def _process_continue_parse(self, obj):  # NOQA
         """
-        解析是否能够进行的核心接口
+        解析是否能够进行安装的核心接口
+
         :param obj: 服务对象
         :type obj: ApplicationHub
-        :return: (bool, str)
+        :return: 元组，包含布尔值和提示信息
         """
         if not obj.app_package:
             return False, f"服务{obj.app_name}无安装包"
@@ -522,20 +616,22 @@ class ServiceArgsSerializer(object):
 
     def get_process_continue(self, obj):    # NOQA
         """
-        解析能否继续进行的标志接口
+        解析能否继续进行安装的标志接口
+
         :param obj: 服务对象
         :type obj: ApplicationHub
-        :return: bool
+        :return: 布尔值，表示能否继续安装
         """
         flag, _ = self._process_continue_parse(obj)
         return flag
 
     def get_process_message(self, obj):    # NOQA
         """
-        解析能否继续进行的信息接口
+        解析能否继续进行安装的信息接口
+
         :param obj: 服务对象
         :type obj: ApplicationHub
-        :return:
+        :return: 提示信息
         """
         _, msg = self._process_continue_parse(obj)
         return msg
@@ -547,10 +643,12 @@ class ValidateExistService(object):
     def __init__(self, data=None):
         """
         初始化方法
+
         :param data: 要被检验的服务信息
         :type data: list
         """
         if not data or not isinstance(data, list):
+            # 若传入的数据不是列表或为空，抛出异常
             raise GeneralError(
                 "ValidateExistService __init__ arg error: data")
         self.data = data
@@ -558,14 +656,17 @@ class ValidateExistService(object):
     def check_cluster(self, dic):   # NOQA
         """
         校验集群信息是否准确
+
         :param dic: 集群信息字典
         :type dic: dict
-        :return:
+        :return: 包含校验结果的集群信息字典
         """
         if ClusterInfo.objects.filter(id=dic.get("id")).exists():
+            # 若集群信息存在，标记校验通过
             dic["check_flag"] = True
             dic["check_msg"] = "success"
             return dic
+        # 若集群信息不存在，标记校验失败并给出提示信息
         dic["check_flag"] = False
         dic["check_msg"] = f"复用已存在集群{dic.get('id', 'UNKNOWN')}不存在"
         return dic
@@ -573,6 +674,7 @@ class ValidateExistService(object):
     def check_single(self, dic):    # NOQA
         """
         检查服务的合法性
+
         :param dic: 服务信息字典
         :type dic: dict
         :return:
@@ -607,6 +709,7 @@ class ValidateInstallService(object):
     def __init__(self, data=None):
         """
         初始化方法
+
         :param data: 要被检验的服务信息
         :type data: list
         """
@@ -619,6 +722,7 @@ class ValidateInstallService(object):
     def check_service_port(self, app_port, ip):     # NOQA
         """
         检查服务端口
+
         :param app_port: 服务端口列表
         :type app_port: list
         :param ip: 主机ip地址
@@ -648,6 +752,7 @@ class ValidateInstallService(object):
     def check_service_args(self, app_install_args, data_path, ip):  # NOQA
         """
         检查服务的安装参数，路径检查
+
         :param app_install_args: 服务安装参数
         :type app_install_args: list
         :param data_path: 主机数据目录
@@ -658,7 +763,10 @@ class ValidateInstallService(object):
         """
         _salt_obj = SaltClient()
         for el in app_install_args:
-            if "dir_key" not in el:
+            # 仅真值 dir_key 视为路径参数：前端会对非路径参数统一注入
+            # dir_key: null（键存在但值为空），只判键存在会把 run_user
+            # 等非路径参数当路径参数拼改 default
+            if not el.get("dir_key"):
                 continue
             _tobe_check_path = os.path.join(
                 data_path, el.get("default", "").lstrip("/"))
@@ -688,6 +796,7 @@ class ValidateInstallService(object):
     def check_single_service(self, dic):    # NOQA
         """
         检查单个服务的安装信息
+
         :param dic: 服务安装信息
         :type dic: dict
         :return:
@@ -736,6 +845,8 @@ class ValidateInstallService(object):
     def run(self):
         """
         运行检查入口函数
+
+
         :return:
         """
         thread_p = ThreadPoolExecutor(
@@ -758,7 +869,7 @@ class ValidateInstallService(object):
 class CreateInstallPlan(object):
     """ 生成部署计划相关数据 """
 
-    def __init__(self, install_data):
+    def __init__(self, install_data, env=None):
         """
         解析安装数据入库方法
         {
@@ -807,10 +918,13 @@ class CreateInstallPlan(object):
         }
         :param install_data: 安装解析数据
         :type install_data: dict
+        :param env: 主安装历史绑定的环境（多环境架构 Task 14，
+            由序列化层从请求环境上下文传入；None 时沿用模型默认环境）
         """
         self.install_data = install_data
         self.install_type = install_data["install_type"]
         self.install_services = install_data["install_services"]
+        self.env = env
 
     def get_app_obj_for_service(self, dic):     # NOQA
         """
@@ -866,13 +980,45 @@ class CreateInstallPlan(object):
             )
         return _new_controller
 
-    def get_env_for_service(self):  # NOQA
+    def get_env_for_service(self, ip=None):  # NOQA
         """
-        获取当前环境
+        获取服务所属环境：服务继承主机环境（spec #10），
+        主机不存在或未设置环境时回退 Env 最后一行（沿用历史行为）
+
+        :param ip: 服务所在主机 IP
         :return:
         """
-        # TODO 暂时使用默认环境
+        if ip:
+            host = Host.objects.filter(ip=ip).first()
+            if host and host.env:
+                return host.env
         return Env.objects.last()
+
+    def get_env_id_for_data_json(self):
+        """
+        获取本次安装 data.json 的环境 id（多环境隔离）：
+
+        1. 优先取构造入参 env（请求环境上下文 Env）；
+        2. env 缺失时按本次 install_services 的 ip 集合反查主机
+           环境（安装主机必同环境——spec #10，覆盖脱离请求直接
+           调用本类的场景）；
+        3. 反查不到唯一环境（跨环境/主机未纳管）时返回 None，
+           DataJson 保持存量全量行为兜底。
+
+        :return: 环境 id 或 None
+        """
+        if self.env is not None:
+            # 兼容传入 Env 实例或 id 两种形态
+            return getattr(self.env, "id", self.env)
+        ip_set = {
+            item.get("ip") for item in self.install_services
+            if item.get("ip")}
+        env_id_set = set(Host.objects.filter(
+            ip__in=ip_set, env__isnull=False
+        ).values_list("env_id", flat=True))
+        if len(env_id_set) == 1:
+            return env_id_set.pop()
+        return None
 
     def create_connect_info(self, dic):     # NOQA
         """
@@ -940,7 +1086,7 @@ class CreateInstallPlan(object):
             service_port=self.get_app_port_for_service(dic),
             service_controllers=self.get_controllers_for_service(dic),
             cluster=self.create_cluster(dic),
-            env=self.get_env_for_service(),
+            env=self.get_env_for_service(dic.get("ip")),
             service_status=6,
             service_connect_info=self.create_connect_info(dic)
         )
@@ -949,7 +1095,8 @@ class CreateInstallPlan(object):
 
     def create_product_instance(self, dic):     # NOQA
         """
-        创建产品实例
+        创建产品实例（与同链路服务一致继承主机环境，
+        get_or_create 查重含 env，跨环境同名实例互不冲突）
         :param dic: 服务数据
         :type dic: dict
         :return:
@@ -960,7 +1107,8 @@ class CreateInstallPlan(object):
         product_instance_name = dic["product_instance_name"]
         Product.objects.get_or_create(
             product_instance_name=product_instance_name,
-            product=self.get_app_obj_for_service(dic).product
+            product=self.get_app_obj_for_service(dic).product,
+            env=self.get_env_for_service(dic.get("ip"))
         )
 
     def check_if_has_post_action(self, ser):    # NOQA
@@ -984,12 +1132,17 @@ class CreateInstallPlan(object):
             try:
                 # step0: 生成
                 # step1: 生成操作唯一uuid，创建主安装记录
+                # （主安装历史绑定环境，多环境架构 Task 14；env 为
+                # None 时不传，沿用模型默认环境）
                 operation_uuid = str(uuid.uuid4())
-                main_obj = MainInstallHistory(
-                    operation_uuid=operation_uuid,
-                    install_status=0,
-                    install_args=self.install_data
-                )
+                main_kwargs = {
+                    "operation_uuid": operation_uuid,
+                    "install_status": 0,
+                    "install_args": self.install_data,
+                }
+                if self.env is not None:
+                    main_kwargs["env"] = self.env
+                main_obj = MainInstallHistory(**main_kwargs)
                 main_obj.save()
                 # step2: 创建安装细节表
                 for item in self.install_services:
@@ -1002,11 +1155,28 @@ class CreateInstallPlan(object):
                     DetailInstallHistory(
                         service=ser_obj,
                         main_install_history=main_obj,
-                        install_detail_args=item,
+                        # 写入侧统一标准 schema（本链路 item 为前端
+                        # payload 原样，键 app_install_args/app_port/
+                        # service_instance_name 需转换；存量老 schema
+                        # 数据由读取侧双键兼容兜底）
+                        install_detail_args=standardize_detail_args(item),
                         post_action_flag=post_action_flag
                     ).save()
-                _json_obj = DataJson(operation_uuid=operation_uuid)
+                # data.json 按本次安装所属环境过滤（多环境隔离，
+                # 避免 pre 阶段把 json cp 到其它环境主机）
+                _json_obj = DataJson(
+                    operation_uuid=operation_uuid,
+                    env_id=self.get_env_id_for_data_json())
                 _json_obj.run()
+                # step3: 创建前置安装记录（与新链路 new_install_utils
+                # create_pre_install_history 对齐）。此前老链路缺失该记录，
+                # install_exec 按 (main, ip) 查不到时整个前置阶段被静默
+                # 跳过，json 文件从未下发到目标机
+                for item in set(DetailInstallHistory.objects.filter(
+                        main_install_history=main_obj
+                ).values_list("service__ip", flat=True)):
+                    PreInstallHistory(
+                        main_install_history=main_obj, ip=item).save()
                 # 调用安装异步任务，并回写异步任务到
                 task_id = install_service.delay(main_obj.id)
                 MainInstallHistory.objects.filter(id=main_obj.id).update(

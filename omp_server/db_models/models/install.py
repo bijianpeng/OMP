@@ -1,6 +1,7 @@
 from django.db import models
 
 from db_models.mixins import TimeStampMixin
+from .env import Env
 from .service import Service
 
 
@@ -37,6 +38,10 @@ class MainInstallHistory(TimeStampMixin):
     install_args = models.JSONField(
         "主表安装信息", null=True, blank=True, help_text="主表安装信息")
     install_log = models.TextField("MAIN安装日志", help_text="MAIN安装日志")
+    env = models.ForeignKey(
+        Env, null=True, blank=True, default=1,
+        on_delete=models.SET_NULL,
+        verbose_name="环境", help_text="环境")
 
     class Meta:
         """元数据"""
@@ -195,6 +200,10 @@ class DeploymentPlan(models.Model):
         null=False, blank=False, help_text="部署操作uuid")
     created = models.DateTimeField(
         "创建时间", null=True, auto_now_add=True, help_text="创建时间")
+    env = models.ForeignKey(
+        Env, null=True, blank=True, default=1,
+        on_delete=models.SET_NULL,
+        verbose_name="环境", help_text="环境")
 
     class Meta:
         db_table = 'omp_deployment_plan'

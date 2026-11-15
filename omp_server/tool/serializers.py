@@ -9,6 +9,7 @@ from db_models.models import ToolExecuteMainHistory, ToolInfo, Host, Service, \
     ToolExecuteDetailHistory, UploadFileHistory
 from tool.tasks import exec_tools_main
 from utils.common.exceptions import GeneralError
+from utils.middleware_handler import get_request_env
 
 
 class ToolInfoSerializer(serializers.ModelSerializer):
@@ -228,9 +229,12 @@ class ToolFormAnswerSerializer(serializers.Serializer):
         return str(value)
 
     def verify_host_info(self, values):
+        # 执行目标主机收口到当前环境：跨环境主机计入数量不一致 ->
+        # 拒绝发起（多环境架构收口第二波）
         target_ips = Host.objects.filter(
             id__in=[value.get("id") for value in values],
-            host_agent=str(Host.AGENT_RUNNING)
+            host_agent=str(Host.AGENT_RUNNING),
+            env=get_request_env(self.context.get("request"))
         ).values("ip", "data_folder")
         if len(target_ips) != len(values):
             raise GeneralError("主机数据异常，请重新选择执行对象！")
@@ -250,7 +254,10 @@ class ToolFormAnswerSerializer(serializers.Serializer):
         target_ips = list(
             Service.objects.filter(
                 service__app_name=tool.target_name,
-                id__in=ids
+                id__in=ids,
+                # 执行目标服务收口到当前环境：跨环境服务计入数量
+                # 不一致 -> 拒绝发起（多环境架构收口第二波）
+                env=get_request_env(self.context.get("request"))
             ).values_list("ip", flat=True)
         )
         if len(target_ips) != len(values):
@@ -306,6 +313,8 @@ class ToolFormAnswerSerializer(serializers.Serializer):
             tool=tool,
             task_name=default_form.get("task_name"),
             operator=request.user.username,
+            # 发起执行写入当前环境上下文（多环境架构 Task 13）
+            env=get_request_env(request),
             form_answer=validated_data
         )
         common_args = {}

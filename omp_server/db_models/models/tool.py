@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # Project: tools
-# Author: jon.liu@yunzhihui.com
+# Author: omp
 # Create time: 2022-02-08 16:04
 # IDE: PyCharm
 # Version: 1.0
@@ -22,6 +22,7 @@ from django.db import models
 from db_models.mixins import TimeStampMixin
 from utils.plugin.public_utils import timedelta_strftime
 from db_models.models import Host
+from .env import Env
 
 
 class ToolInfo(TimeStampMixin):
@@ -179,6 +180,10 @@ class ToolExecuteMainHistory(models.Model):
         "开始时间", null=True, auto_now_add=True, help_text="开始时间")
     end_time = models.DateTimeField("结束时间", null=True, help_text="结束时间")
     form_answer = models.JSONField("任务表单提交结果", default=dict)
+    env = models.ForeignKey(
+        Env, null=True, blank=True, default=1,
+        on_delete=models.SET_NULL,
+        verbose_name="环境", help_text="环境")
 
     class Meta:
         """元数据"""

@@ -13,6 +13,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.serializers import Serializer
 from utils.common.exceptions import OperateError
 from utils.plugin.public_utils import check_is_ip_address, timedelta_strftime
+from utils.middleware_handler import get_request_env
 from app_store.tmp_exec_back_task import front_end_verified_init
 
 from db_models.models import (
@@ -43,9 +44,10 @@ class ComponentListSerializer(ModelSerializer):
                   "app_description", "instance_number")
 
     def get_instance_number(self, obj):
-        """ 获取组件已安装实例数量 """
+        """ 获取组件已安装实例数量（按当前环境隔离统计） """
         return Service.objects.filter(
-            service__app_name=obj.app_name).count()
+            service__app_name=obj.app_name,
+            env=get_request_env(self.context.get("request"))).count()
 
 
 class ServiceListSerializer(ModelSerializer):
@@ -59,10 +61,12 @@ class ServiceListSerializer(ModelSerializer):
                   "pro_description", "instance_number")
 
     def get_instance_number(self, obj):
-        """ 获取组件已安装实例数量 """
+        """ 获取应用已安装实例数量（按当前环境隔离统计） """
         # return Service.objects.filter(
         #     service__product__pro_name=obj.pro_name).count()
-        return Product.objects.filter(product=obj).count()
+        return Product.objects.filter(
+            product=obj,
+            env=get_request_env(self.context.get("request"))).count()
 
 
 class UploadPackageSerializer(Serializer):
@@ -528,8 +532,13 @@ class ExecuteInstallSerializer(Serializer):
             attrs["is_valid_flag"] = False
             attrs["is_valid_msg"] = "数据校验出错"
             return attrs
-        # 数据入库逻辑
-        _create_data_obj = CreateInstallPlan(install_data=attrs)
+        # 数据入库逻辑（主安装历史绑定请求环境上下文，
+        # 多环境架构 Task 14；脱离请求直接调用时不传环境）
+        _request = self.context.get("request")
+        _create_data_obj = CreateInstallPlan(
+            install_data=attrs,
+            env=get_request_env(_request) if _request is not None else None
+        )
         flag, msg = _create_data_obj.run()
         if not flag:
             attrs["is_valid_flag"] = False

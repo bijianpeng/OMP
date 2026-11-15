@@ -1,6 +1,8 @@
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 
+from .env import Env
+
 
 class UserProfile(AbstractUser):
     """ 自定义用户表 """
@@ -36,6 +38,10 @@ class OperateLog(models.Model):
         "请求结果", default="success", help_text="请求结果")
     create_time = models.DateTimeField(
         "操作发生时间", auto_now_add=True, help_text="操作发生时间")
+    env = models.ForeignKey(
+        Env, null=True, blank=True, default=1,
+        on_delete=models.SET_NULL,
+        verbose_name="环境", help_text="环境")
 
     class Meta:
         """ 元数据 """
@@ -60,3 +66,21 @@ class UserLoginLog(models.Model):
     class Meta:
         db_table = "omp_login_log"
         verbose_name = verbose_name_plural = "用户登陆记录"
+
+
+class UserEnv(models.Model):
+    """ 用户环境授权表 """
+
+    objects = None
+    user = models.ForeignKey(
+        UserProfile, on_delete=models.CASCADE,
+        verbose_name="授权用户", help_text="授权用户")
+    env = models.ForeignKey(
+        Env, on_delete=models.CASCADE,
+        verbose_name="授权环境", help_text="授权环境")
+
+    class Meta:
+        """ 元数据 """
+        db_table = "omp_user_env"
+        unique_together = ("user", "env")
+        verbose_name = verbose_name_plural = "用户环境授权"

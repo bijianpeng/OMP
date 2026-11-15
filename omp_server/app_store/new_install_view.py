@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # Project: new_install_view
-# Author: jon.liu@yunzhihui.com
+# Author: omp
 # Create time: 2021-11-12 09:19
 # IDE: PyCharm
 # Version: 1.0
@@ -22,6 +22,7 @@ from db_models.models import (
     PreInstallHistory, PostInstallHistory
 )
 from utils.common.exceptions import ValidationError
+from utils.middleware_handler import get_request_env
 from utils.common.paginations import PageNumberPager
 # from app_store.install_utils import ServiceArgsSerializer
 from app_store.new_install_utils import ServiceArgsPortUtils
@@ -183,6 +184,11 @@ class GetInstallArgsByIpView(GenericViewSet, ListModelMixin):
         _data = BaseRedisData(unique_key).get_step_5_host_service_map()
         check_data = BaseRedisData(unique_key).get_step_2_origin_data()
         install_ser = check_data.get("install")
+        # with 服务在 _with_ser(不在 step_2 install)，合并进 install_ser 以通过版本检查
+        _with_ser_lst = BaseRedisData(unique_key).get_with_ser()
+        for ws in _with_ser_lst:
+            if ws.get("name") and ws.get("name") not in install_ser:
+                install_ser[ws["name"]] = {"version": ws.get("version")}
         services_lst = _data.get(ip, [])
         app_lst = ApplicationHub.objects.filter(app_name__in=services_lst)
         _ret_data = list()
@@ -270,7 +276,7 @@ class ShowInstallProcessView(GenericViewSet, ListModelMixin):
         main_status = main_obj.install_status
         install_detail_queryset = DetailInstallHistory.objects.filter(
             main_install_history=main_obj
-        ).exclude(service=None).values(
+        ).exclude(service=None).order_by("service__id").values(
             "service__service__app_name",
             "service__ip",
             "install_step_status"
@@ -403,6 +409,11 @@ class MainInstallHistoryView(GenericViewSet, ListModelMixin):
     queryset = MainInstallHistory.objects.all().order_by("-id")
     serializer_class = MainInstallHistorySerializer
     pagination_class = PageNumberPager
+
+    def get_queryset(self):
+        # 主安装历史列表按当前环境上下文过滤（多环境架构 Task 14）
+        return super(MainInstallHistoryView, self).get_queryset().filter(
+            env=get_request_env(self.request))
 
 
 class CreateComponentInstallInfoView(GenericViewSet, CreateModelMixin):

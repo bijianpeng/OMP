@@ -1,6 +1,6 @@
 # !/usr/bin/python3
 # -*-coding:utf-8-*-
-# Author: len chen
+# Author: omp
 # CreateDate: 2021/10/13 6:06 下午
 # Description: 巡检异步任务及定时任务
 
@@ -30,7 +30,7 @@ logger = get_task_logger("celery_log")
 def get_hosts_data(env, hosts):
     """
     查询多主机prometheus数据，组装后进行反填
-    :env: 环境queryset
+    :env: 环境queryset（下发到监控链路时取 env.code，spec §6.4）
     :hosts: 主机列表，例：["主机ip"]
     """
     temp_list = list()
@@ -38,7 +38,8 @@ def get_hosts_data(env, hosts):
     total_no = error_no = 0     # 总指标数/异常指标数
     for instance in hosts:
         total_no += 23          # 总指标数;当前共23个
-        threads.append(MyThread(func=target_host_thread, args=(env, instance)))
+        # 进入监控链路的 env 一律传 Env.code（spec §6.4）
+        threads.append(MyThread(func=target_host_thread, args=(env.code, instance)))
 
     for t in threads:
         t.start()
@@ -82,7 +83,7 @@ def get_prometheus_data(env_id, hosts, services, history_id, report_id, handle):
             # 组件巡检
             file_name = f"serviceinspection{_h.inspection_name.split('-')[1]}"
             scan_info, scan_result, serv_data = \
-                target_service_run(env, services)
+                target_service_run(env.code, services)
             kwargs.update({
                 'scan_info': scan_info, 'scan_result': scan_result,
                 'serv_data': serv_data,
@@ -104,7 +105,7 @@ def get_prometheus_data(env_id, hosts, services, history_id, report_id, handle):
                 service_status__in=[5, 6, 7])
             services = list(_.values_list('id', flat=True))
             if len(services) > 0:
-                s_info, s_result, serv_data = target_service_run(env, services)
+                s_info, s_result, serv_data = target_service_run(env.code, services)
             else:
                 s_info, serv_data = {'service': 0}, []
                 s_result = {'all_target_num': 0, 'abnormal_target': 0}
@@ -175,8 +176,10 @@ def inspection_crontab(**kwargs):
                     logger.error(f"Inspection auto task failed with error: "
                                  f"ID={env.id}环境下无主机数据")
             if job_type in [0, 2]:
-                # 2、查询环境下组件信息
+                # 2、查询环境下组件信息（限任务归属环境，跨环境服务
+                # 不选入该环境巡检——多环境架构 Task 7b）
                 _ = Service.objects.filter(
+                    env=env.id,
                     service__is_base_env=False
                 ).exclude(service_status__in=[5, 6, 7])
                 services = list(_.values_list('id', flat=True))

@@ -1,17 +1,23 @@
-# !/usr/bin/python3
+# -*- coding: utf-8 -*-\n# !/usr/bin/python3
 # -*-coding:utf-8-*-
-# Author: len chen
+# Author: omp
 # CreateDate: 2021/10/28 4:59 下午
 # Description:
-from tests.base import AutoLoginTest
+# ӳٵAutoLoginTest
+from tests.base import get_auto_login_test
+AutoLoginTest = get_auto_login_test()
 from rest_framework.reverse import reverse
+from db_models.models import Env
 from tests.test_inspection.inspection_mixin import InspectionHistoryMixin
 
 
 class TestInspectionCrontabList(AutoLoginTest, InspectionHistoryMixin):
     def setUp(self):
         super(TestInspectionCrontabList, self).setUp()
-        self.env = self.create_default_env()
+        # BaseTest.setUp 已创建 default 环境（id=1），二次调用
+        # create_default_env 会因已存在返回 None；巡检任务视图已按
+        # 环境上下文过滤（Task 12），测试数据需落在 default 环境上
+        self.env = Env.objects.get(id=1)
 
     def tearDown(self):
         super(TestInspectionCrontabList, self).tearDown()
@@ -25,7 +31,7 @@ class TestInspectionCrontabList(AutoLoginTest, InspectionHistoryMixin):
     def test_crontab_create(self):
         _ = {'crontab_detail': {'hour': "09", 'minute': "41", 'month': "*",
                                 'day_of_week': "1", 'day': "*"},
-             'env': self.env,
+             'env': self.env.id,
              'is_start_crontab': 0,
              'job_name': "深度分析",
              'job_type': 0}
@@ -34,7 +40,7 @@ class TestInspectionCrontabList(AutoLoginTest, InspectionHistoryMixin):
         self.assertEqual(_obj.id, resp.get('data').get('id'))
 
     def test_crontab_update(self):
-        _ = {'env': self.env, 'is_start_crontab': 0, 'job_name': "深度分析",
+        _ = {'env': self.env.id, 'is_start_crontab': 0, 'job_name': "深度分析",
              'job_type': 0,
              'crontab_detail': {'hour': "09", 'minute': "41", 'month': "*",
                                 'day_of_week': "1", 'day': "*"}
