@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # Project: install_mysql_redis
-# Author: jon.liu@yunzhihui.com
+# Author: omp
 # Create time: 2021-12-04 18:42
 # IDE: PyCharm
 # Version: 1.0
@@ -114,7 +114,7 @@ def install_mysql():
     time.sleep(30)
     # 确保mysql启动成功并可用
     _mysql_cli = os.path.join(_dic["CW_MYSQL_BASE_DIR"], "bin/mysql")
-    _mysql_cli = f"{_mysql_cli} -S {os.path.join(_dic['CW_MYSQL_DATA_DIR'], 'mysql.sock')}"
+    _mysql_cli = f"{_mysql_cli} -uroot -S {os.path.join(_dic['CW_MYSQL_DATA_DIR'], 'mysql.sock')}"
     try_times = 0
     while try_times < 10:
         out, _, _ = cmd(f"{_mysql_cli} -e 'SHOW DATABASES;'")

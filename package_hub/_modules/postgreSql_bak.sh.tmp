@@ -39,7 +39,7 @@ function request_omp() {
     # $1 结果(必填)  $2 消息  $3 omp抓取路径 要确定是一个单独的文件
     rq_body="{\"result\":\"$1\",\"message\":\"$2\",\"remote_path\":\"$3\",\"ip\":\"$ip\",\"need_push\":\"$need_push\"}"
   fi
-  RES=$(curl --location --request POST 'http://${cw_o_master_url}p/' --header 'Content-Type: application/json' --data "$rq_body"|grep "\"code\":0")
+  RES=$(curl --location --request PATCH 'http://${cw_o_master_url}' --header 'Content-Type: application/json' --data "$rq_body"|grep "\"code\":0")
   code=$?
   # 存在返回证明有异常 或者状态码非0
   if [[ -z "$RES" ]] || [[ $code != 0 ]];then

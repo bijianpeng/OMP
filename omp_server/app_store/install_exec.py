@@ -10,9 +10,6 @@ import time
 import queue
 import logging
 import re
-from concurrent.futures import (
-    ThreadPoolExecutor, as_completed
-)
 # from django.db.models import F
 from django.conf import settings
 
@@ -24,7 +21,6 @@ from db_models.models import (
 )
 from utils.plugin.salt_client import SaltClient
 from utils.parse_config import BASIC_ORDER
-from utils.parse_config import THREAD_POOL_MAX_WORKERS
 from utils.common.exceptions import GeneralError
 from omp_server.settings import PROJECT_DIR
 from app_store.post_install_utils import POST_INSTALL_SERVICE
@@ -38,7 +34,7 @@ logger = logging.getLogger("server")
 
 class InstallServiceExecutor:
     """ 安装服务执行器 """
-    ACTION_LS = ("send", "unzip", "install", "init", "start")
+    ACTION_LS = ("send", "unzip", "install", "init", "start", "post_action")
 
     def __init__(self, main_id, username, timeout=300):
         self.main_id = main_id
@@ -229,7 +225,14 @@ class InstallServiceExecutor:
             pre_install_obj = PreInstallHistory.objects.filter(
                 main_install_history=main_obj, ip=key
             ).last()
-            if not pre_install_obj or pre_install_obj.install_flag == 2:
+            if not pre_install_obj:
+                # 历史数据/老链路入口可能未生成前置安装记录，
+                # 此处补建并执行，避免前置阶段（json 下发 + 创建
+                # run_user）被静默跳过
+                pre_install_obj = PreInstallHistory(
+                    main_install_history=main_obj, ip=key)
+                pre_install_obj.save()
+            elif pre_install_obj.install_flag == 2:
                 continue
             try:
                 pre_install_obj.install_flag = 1
@@ -377,7 +380,11 @@ class InstallServiceExecutor:
             app_name = detail_args.get("name", None)
             assert app_name is not None
             target_path = None
-            for info in detail_args.get("install_args", []):
+            # 兼容两种参数键名：老 schema 为 install_args，新前端 payload 原样
+            # 落库(executeInstall → new_install_utils)为 app_install_args
+            install_args = detail_args.get("install_args") or \
+                detail_args.get("app_install_args") or []
+            for info in install_args:
                 if info.get("key", "") == "base_dir":
                     target_path = info.get("default")
                     break
@@ -677,6 +684,74 @@ class InstallServiceExecutor:
         detail_obj.service.save()
         return True, "Start Success"
 
+    def post_action(self, detail_obj):
+        """
+        执行该服务的 post_action 脚本（per-service 模式）
+        在 start 成功后立即执行，主要用于更新 nacos 配置等用途
+
+        数据源说明：
+          - application.extend_fields["post_action"] 是 YAML 解析得到的真实配置（权威）
+          - service.service_controllers["post_action"] 是派生数据，由 views.py:798
+            在创建 Service 时拼接产生；该处缺 truthiness 检查，当 extend_fields
+            为空时会把安装目录本身（如 /opt/bigmw/jdk/）误存为 post_action
+          - 因此必须以 extend_fields 为判据，service_controllers 仅用于取绝对路径
+        """
+        service_obj = detail_obj.service
+        service_name = service_obj.service_instance_name
+        target_ip = service_obj.ip
+        app_obj = service_obj.service  # ApplicationHub
+
+        # 权威判据：extend_fields 中的 post_action 配置
+        extend_fields = (app_obj.extend_fields or {}) if app_obj else {}
+        post_action_rel = extend_fields.get("post_action") or ""
+        logger.info(
+            f"PostAction Begin -> [{service_name}], "
+            f"extend_fields.post_action={post_action_rel!r}")
+        if not post_action_rel:
+            # 真实无 post_action 配置，标记为无需执行
+            detail_obj.post_action_flag = 4
+            detail_obj.save()
+            return True, "PostAction Un Do"
+
+        # extend_fields 非空 → 该服务确实配置了 post_action
+        # 从 service_controllers 取预拼接的绝对路径
+        _script = service_obj.service_controllers.get("post_action", "")
+
+        detail_obj.post_action_flag = 1
+        detail_obj.post_action_msg += \
+            f"{self.now_time()} {service_name} 开始执行 post_action: {_script}\n"
+        detail_obj.save()
+
+        try:
+            salt_client = SaltClient()
+            command = f"chmod +x {_script.split()[0]} && {_script}"
+            is_success, message = salt_client.cmd(
+                target=target_ip,
+                command=command,
+                timeout=60
+            )
+            detail_obj.post_action_msg += \
+                f"{self.now_time()} post_action 标志为: {is_success}; " \
+                f"结果为: {message}\n"
+            logger.info(
+                f"PostAction {_script}, flag: {is_success}; msg: {message}")
+            if not is_success:
+                raise GeneralError(message)
+        except Exception as err:
+            logger.error(f"PostAction Failed -> [{service_name}]: {err}")
+            detail_obj.post_action_flag = 3
+            detail_obj.post_action_msg += \
+                f"{self.now_time()} {service_name} post_action 执行失败: {err}\n"
+            detail_obj.save()
+            return False, err
+
+        logger.info(f"PostAction Success -> [{service_name}]")
+        detail_obj.post_action_flag = 2
+        detail_obj.post_action_msg += \
+            f"{self.now_time()} {service_name} post_action 执行成功\n"
+        detail_obj.save()
+        return True, "PostAction Success"
+
     def execute_post_action(self, queryset, post_obj):  # NOQA
         """
         执行安装后的操作，所有服务安装完成后，针对不同服务的个性化配置执行
@@ -762,30 +837,23 @@ class InstallServiceExecutor:
 
     def thread_poll_executor(self, detail_obj_lst):
         """
-        多线程执行器
+        串行执行器（原多线程执行器，已改为串行）
         :param detail_obj_lst: [detail_obj, detail_obj]
         :return:
         """
-        logger.info(f"Start thread poll executor for {detail_obj_lst}")
-        # 阻塞部署hadoop等
+        logger.info(f"Start serial executor for {detail_obj_lst}")
+        # 阻塞部署hadoop等（HA 节点仍走 high_availability_executor 内部并发）
         detail_obj_lst = self.high_availability_executor(detail_obj_lst)
-        with ThreadPoolExecutor(THREAD_POOL_MAX_WORKERS) as executor:
-            _future_list = []
-            for detail_obj in detail_obj_lst:
-                # 更新单条安装记录的状态
-                detail_obj.install_step_status = \
-                    DetailInstallHistory.INSTALL_STATUS_INSTALLING
-                detail_obj.save()
-                future_obj = executor.submit(
-                    self.single_service_executor, detail_obj
-                )
-                _future_list.append(future_obj)
-            for future in as_completed(_future_list):
-                is_success, message = future.result()
-                if not is_success:
-                    self.is_error = True
-                    break
-        logger.info("Finish thread poll executor!")
+        for detail_obj in detail_obj_lst:
+            # 更新单条安装记录的状态
+            detail_obj.install_step_status = \
+                DetailInstallHistory.INSTALL_STATUS_INSTALLING
+            detail_obj.save()
+            is_success, message = self.single_service_executor(detail_obj)
+            if not is_success:
+                self.is_error = True
+                break
+        logger.info("Finish serial executor!")
 
     @staticmethod
     def make_install_order(queryset):
@@ -807,10 +875,15 @@ class InstallServiceExecutor:
             ]
             execute_lst.append(_lst)
         # 对自研服务进行排序处理，先过滤出自研服务的列表
-        _ser = [
-            el for el in queryset
-            if el.service.service.app_type == ApplicationHub.APP_TYPE_SERVICE
-        ]
+        # 按 Service.id 升序排序：Service 表按 Excel 行序 bulk_create 入库
+        # （见 DeploymentPlanImportView），id 升序 == Excel 行序正序
+        _ser = sorted(
+            [
+                el for el in queryset
+                if el.service.service.app_type == ApplicationHub.APP_TYPE_SERVICE
+            ],
+            key=lambda el: el.service.id
+        )
         # 自研服务level级别为0的服务，仅依赖于基础组件，无其他依赖
         execute_lst.append(
             [
@@ -828,7 +901,12 @@ class InstallServiceExecutor:
 
     def execute_post_action_main(self, main_obj):
         """
-        执行注册操作 post_action
+        post_action 状态聚合器（per-service 重构后）：
+          - post_action 的实际执行由两处负责：
+            1. main() 的 pre-pass 阶段：重试前序服务遗留的 post_action（install 已成功）
+            2. single_service_executor：首次安装时按服务独立执行
+          - 本方法仅做状态聚合，将所有 detail.post_action_flag 汇总写入
+            PostInstallHistory，供前端进度展示使用
         :param main_obj:
         :return:
         """
@@ -838,29 +916,39 @@ class InstallServiceExecutor:
         if not post_obj:
             logger.info("No need execute post action!")
             return True, "success"
-        # 安装后执行动作范围过滤，排除无需执行操作以及排除已经执行成功的服务对象
-        # 判断整体执行安装完成后才执行
-        if not DetailInstallHistory.objects.filter(
-                install_step_status=DetailInstallHistory.INSTALL_STATUS_FAILED,
-                main_install_history_id=self.main_id
-        ).exists() and not self.is_error:
-            post_action_queryset = DetailInstallHistory.objects.select_related(
-                "service", "service__service",
-                "service__service__app_package"
-            ).filter(main_install_history_id=self.main_id).exclude(
-                post_action_flag__in=[2, 4]
-            )
-            main_obj.install_status = \
-                MainInstallHistory.INSTALL_STATUS_REGISTER
-            main_obj.save()
-            self.execute_post_action(post_action_queryset, post_obj)
-        if not self.is_error:
-            post_obj.install_flag = 2
+
+        # 聚合所有 detail 的 post_action 状态到 PostInstallHistory
+        detail_qs = DetailInstallHistory.objects.filter(
+            main_install_history_id=self.main_id
+        ).exclude(post_action_flag=4).values(
+            "post_action_flag", "service__service_instance_name",
+            "service__ip", "post_action_msg"
+        )
+        flag_text = {0: "待执行", 1: "执行中", 2: "成功", 3: "失败"}
+        log_lines = []
+        has_failed = False
+        for item in detail_qs:
+            _flag = item["post_action_flag"]
+            if _flag == 3:
+                has_failed = True
+            svc = item["service__service_instance_name"] or "unknown"
+            ip = item["service__ip"] or "unknown"
+            log_lines.append(
+                f"{self.now_time()} [{svc}@{ip}] post_action "
+                f"{flag_text.get(_flag, '未知')}")
+            if item["post_action_msg"]:
+                log_lines.append(item["post_action_msg"])
+        if log_lines:
+            post_obj.install_log += "\n=== post_action 汇总 ===\n" + \
+                "\n".join(log_lines) + "\n"
+
+        if has_failed or self.is_error:
+            post_obj.install_flag = 3
             post_obj.save()
-            return True, "success"
-        post_obj.install_flag = 3
+            return False, "failed"
+        post_obj.install_flag = 2
         post_obj.save()
-        return False, "failed"
+        return True, "success"
 
     def execute_pre_install(self, main_obj):
         """
@@ -872,6 +960,8 @@ class InstallServiceExecutor:
             self.create_user_and_send_json(main_obj)
         except Exception as e:
             logger.error(f"Pre-install failed: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
         if PreInstallHistory.objects.filter(
                 main_install_history=main_obj,
                 install_flag__in=[0, 1, 3]
@@ -937,9 +1027,25 @@ class InstallServiceExecutor:
             timeout=60
         )
         str_os_version = ssl_msg.strip()
-        res = re.findall(
-            r'(.*?) ([0-9]+)\.([0-9]+)\.([0-9]+).*', str_os_version)
-        str_version = "".join(res[0][1:]) if res else ""
+        # res = re.findall(
+        #     r'(.*?) ([0-9]+)\.([0-9]+)\.([0-9]+).*', str_os_version)
+        # str_version = "".join(res[0][1:]) if res else ""
+        # 使用更安全的版本号解析方法，避免正则表达式的安全风险
+        version_parts = str_os_version.split()
+        str_version = ""
+        for part in version_parts:
+            if '.' in part:
+                version_numbers = part.split('.')
+                if len(version_numbers) >= 3:
+                    try:
+                        # 验证每个部分都是数字
+                        major = int(version_numbers[0])
+                        minor = int(version_numbers[1])
+                        patch = int(version_numbers[2])
+                        str_version = f"{major}{minor}{patch}"
+                        break
+                    except (ValueError, IndexError):
+                        continue
         if not ssl_flag:
             return 0
         try:
@@ -1008,6 +1114,35 @@ class InstallServiceExecutor:
             main_obj.save()
             return
 
+        # 阶段 0（pre-post_action）：重试前序服务遗留的 post_action
+        # 这些服务 install 已成功但 post_action 未完成（首次失败或上次重试中断）
+        # 必须在 install loop 之前完成，否则依赖该 post_action 结果的后续服务
+        # （如某服务 init 需要从 nacos 拉配置）会因为前序 post_action 未生效而失败
+        pre_post_queryset = DetailInstallHistory.objects.select_related(
+            "service", "service__service", "service__service__app_package"
+        ).filter(
+            main_install_history_id=self.main_id,
+            install_step_status=DetailInstallHistory.INSTALL_STATUS_SUCCESS,
+        ).exclude(post_action_flag__in=[2, 4])
+        if pre_post_queryset.exists():
+            logger.info(
+                f"Pre-execute {pre_post_queryset.count()} pending post_actions "
+                f"before install loop, id[{self.main_id}]")
+            for detail_obj in pre_post_queryset:
+                _pa_flag, _pa_msg = self.post_action(detail_obj)
+                if not _pa_flag:
+                    self.is_error = True
+                    break
+        if self.is_error:
+            # pre-pass 失败：聚合状态后退出，用户可再次发起重试
+            logger.info(
+                f"Pre post_action failed, abort install loop, id[{self.main_id}]")
+            self.execute_post_action_main(main_obj=main_obj)
+            main_obj.install_status = \
+                MainInstallHistory.INSTALL_STATUS_FAILED
+            main_obj.save()
+            return self.is_error
+
         # 获取所有安装细节表，排除已经安装成功的记录，不再重复安装
         queryset = DetailInstallHistory.objects.select_related(
             "service", "service__service", "service__service__app_package"
@@ -1045,18 +1180,12 @@ class InstallServiceExecutor:
 
         if self.is_error:
             # 步骤失败，主流程失败
+            # per-service 模式下 post_action 可能已部分执行，仍需聚合状态
+            logger.info(f"Main Install Failed, id[{self.main_id}]")
+            self.execute_post_action_main(main_obj=main_obj)
             main_obj.install_status = \
                 MainInstallHistory.INSTALL_STATUS_FAILED
             main_obj.save()
-            # 安装完成后不再更改服务的状态
-            # 状态为 '待安装'/'安装中' 的记录，则记为 '失败'
-            # queryset.filter(install_step_status__in=(
-            #     DetailInstallHistory.INSTALL_STATUS_READY,
-            #     DetailInstallHistory.INSTALL_STATUS_INSTALLING
-            # )).update(
-            #     install_step_status=DetailInstallHistory.INSTALL_STATUS_FAILED
-            # )
-            logger.info(f"Main Install Failed, id[{self.main_id}]")
             return self.is_error
 
         post_flag, post_msg = self.execute_post_action_main(main_obj=main_obj)

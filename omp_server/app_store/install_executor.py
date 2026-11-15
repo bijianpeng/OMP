@@ -153,7 +153,11 @@ class InstallServiceExecutor:
             app_name = detail_args.get("name", None)
             assert app_name is not None
             target_path = None
-            for info in detail_args.get("install_args", []):
+            # 兼容两种参数键名：老 schema 为 install_args，新前端 payload 原样
+            # 落库(executeInstall → new_install_utils)为 app_install_args
+            install_args = detail_args.get("install_args") or \
+                detail_args.get("app_install_args") or []
+            for info in install_args:
                 if info.get("key", "") == "base_dir":
                     target_path = info.get("default")
                     break

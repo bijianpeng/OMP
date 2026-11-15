@@ -8,8 +8,8 @@ import hashlib
 
 def get_hash_value(expr, severity):
     data = expr + severity
-    hash_data = hashlib.md5(data.encode(encoding='UTF-8')).hexdigest()
-    return hash_data
+    hashed_data = hashlib.md5(data.encode(encoding='UTF-8'), usedforsecurity=True).hexdigest()
+    return hashed_data
 
 
 def update_hash_data(apps, schema_editor):
@@ -33,4 +33,9 @@ class Migration(migrations.Migration):
             field=models.CharField(null=True, blank=True, unique=True, verbose_name='唯一hash值', max_length=255),
         ),
         migrations.RunPython(update_hash_data),
+        migrations.AlterField(
+            model_name='labels',
+            name='label_name',
+            field=models.CharField(help_text='标签名称', max_length=128, verbose_name='标签名称'),
+        ),
     ]
