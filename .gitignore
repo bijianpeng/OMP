@@ -191,3 +191,9 @@ temp
 /.claude/
 /.mcp.json
 /CLAUDE.md
+
+# superpowers 工作文档（设计/计划，不入库）
+/docs/superpowers/
+
+# 打包器目录（放行，不被上方 build/ 宽规则误伤）
+!scripts/build/
