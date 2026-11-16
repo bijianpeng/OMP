@@ -180,3 +180,14 @@ Temporary Items
 
 temp
 /package_hub/omp_monitor_agent.tar.gz
+
+# Node / pnpm (omp_web vben monorepo)
+/omp_web/**/node_modules/
+*.tsbuildinfo
+/lefthook.yml
+
+# Claude Code local settings
+.claude/settings.local.json
+/.claude/
+/.mcp.json
+/CLAUDE.md
