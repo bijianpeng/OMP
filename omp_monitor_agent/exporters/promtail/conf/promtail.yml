@@ -1,0 +1,12 @@
+server:
+  grpc_listen_port: 0
+  http_listen_port: 29080
+clients:
+  - url: http://10.0.3.122:23100/loki/api/v1/push
+positions:
+  filename: /data/app/promtail/conf/positions.yml
+scrape_configs:
+  - job_name: cloudwise
+    file_sd_configs:
+      - files:
+          - /data/app/promtail/conf/targets.json

@@ -1,0 +1,81 @@
+#!/bin/bash
+
+test -f /etc/rc.d/init.d/functions && . /etc/rc.d/init.d/functions
+
+HERE=$(cd -P -- $(dirname -- "$0") && pwd -P)
+ROOT_DIR=$(cd $HERE/.. && pwd -P)
+source ${ROOT_DIR}/conf/httpd.conf
+
+PROGNAME=httpd_exporter
+PROG=${ROOT_DIR}/scripts/$PROGNAME
+USER=root
+
+LOGFILE=${ROOT_DIR}/log/httpdExporter.log
+LOCKFILE=${ROOT_DIR}/pid/$PROGNAME.pid
+
+start() {
+    echo -n "Starting $PROGNAME:"
+    chmod 777 $PROG
+    $PROG -telemetry.address ":${listen_port}" -scrape_uri "http://${httpd_server}/ompmonitorstatus?auto" &>$LOGFILE &
+    sleep 2
+    pid_port=`ps -ef |grep  ${PROGNAME}|grep monitor|grep -v grep |awk '{print $2}'`
+    echo $pid_port >$LOCKFILE
+    if [ ! -n "${pid_port}" ];then
+      echo "启动失败，${PROGNAME}服务状态为[--dead--]"
+      rm -rf $LOCKFILE
+      exit 1
+    else
+      echo "启动${PROGNAME}服务成功"
+    fi;
+    status
+}
+
+stop() {
+    echo -n "Shutting down $PROGNAME: "
+    if [ ! -f ${LOCKFILE} ];then echo -n "进程文件不存在，服务已经停止 ${PROGNAME} [--dead--]";return 1;fi
+    PID=`cat ${LOCKFILE}`
+    kill -9 $PID
+    status
+    rm -f $LOCKFILE
+    echo
+}
+
+status() {
+  if [ ! -f ${LOCKFILE} ];then echo -n "${PROGNAME} [--dead--]";return 1;fi
+  PID=`cat ${LOCKFILE}`
+  ps -efp ${PID} | grep -w ${PROGNAME}| grep monitor | grep -v grep > /dev/null 2>&1
+  if [ $? -eq 0 ];then
+    echo "${PROGNAME} [--running--]"
+    return 0
+  else
+    echo "${PROGNAME} [--dead--]"
+    return 1
+  fi
+
+}
+
+
+
+case "$1" in
+    start)
+    start
+    ;;
+    stop)
+    stop
+    ;;
+    status)
+    status
+    ;;
+    restart)
+    stop
+    start
+    ;;
+    reload)
+    echo "Sending SIGHUP to $PROGNAME"
+    kill -SIGHUP $(pidofproc $PROGNAME)
+    ;;
+    *)
+        echo "Usage: service httpd_exporter {start|stop|status|reload|restart}"
+        exit 1
+    ;;
+esac

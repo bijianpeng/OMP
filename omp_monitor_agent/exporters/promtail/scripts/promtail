@@ -1,0 +1,69 @@
+#!/bin/bash
+# Author:
+# Create Date: 2020-04-16 03:19:34
+# Last Modified: 2020-11-12 15:31:56
+# Description:
+export PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games:/sbin:/usr/sbin"
+HERE=$(cd -P -- $(dirname -- "$0") && pwd -P)
+PARENT_DIR=$(echo ${HERE%/*})
+
+PROGNAME="promtail"
+LOCKFILE="$PARENT_DIR/pid/promtail.pid"
+
+
+start() {
+  chmod 777 $PARENT_DIR/sbin/promtail-linux-amd64
+  nohup $PARENT_DIR/sbin/promtail-linux-amd64 \
+      -config.file=$PARENT_DIR/conf/promtail.yml \
+      -log.level=error \
+      1>/dev/null 2> $PARENT_DIR/logs/promtail-info.log &
+  sleep 2
+  pid_port=`ps -ef |grep  "promtail-linux-amd64"|grep "promtail"|grep -v grep |awk '{print $2}'`
+  echo $pid_port > $LOCKFILE
+  if [ ! -n "${pid_port}" ];then
+    echo "启动失败${PROGNAME}服务状态为[--dead--]"
+    rm -rf $LOCKFILE
+    exit 1
+  else
+    echo "启动node-exporter服务成功"
+  fi;
+  status
+}
+
+stop() {
+  echo -n "Shutting down $PROGNAME: "
+  if [ ! -f ${LOCKFILE} ];then echo -n "进程文件不存在，服务已经停止 ${PROGNAME} [--dead--]";return 1;fi
+  PID=`cat ${LOCKFILE}`
+  kill -9 $PID
+  status
+  rm -f $LOCKFILE
+  echo
+}
+
+status() {
+  if [ ! -f ${LOCKFILE} ];then echo -n "${PROGNAME} [--dead--]";return 1;fi
+  PID=`cat ${LOCKFILE}`
+  ps -efp ${PID} | grep -w "promtail-linux-amd64"| grep monitor | grep -v grep > /dev/null 2>&1
+  if [ $? -eq 0 ];then
+    echo "${PROGNAME} [--running--]"
+    return 0
+  else
+    echo "${PROGNAME} [--dead--]"
+    return 1
+  fi
+}
+
+case $1 in
+    start) start ;;
+    stop) stop ;;
+    restart)
+       stop
+       start
+       ;;
+    status)
+       status
+       ;;
+    *) echo "usage: $0 [start|stop]"
+       ;;
+esac
+

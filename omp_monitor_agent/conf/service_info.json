@@ -1,0 +1,14 @@
+{
+    "node": {
+        "quotes": [],
+        "service_port": null,
+        "exporter_port": 19017,
+        "username": null,
+        "password": null,
+        "auth_user": null,
+        "auth_password_encryption": null,
+        "exporter_metric": "metrics",
+        "only_process": 0,
+        "process_key_word": "node"
+    }
+}

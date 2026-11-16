@@ -1,0 +1,90 @@
+# OMP v1.3.0 打包工件清单（manifest）
+# 结构：components / agents / exporters / appstore 四段，字段固定 name|version|source|sha256|status
+# status 枚举：pending（版本待 P2 锁定）| fetched（已下载缓存）| locked（版本+sha256 已锁定）
+# 下载源策略见同目录 SOURCES.md；本文件由 P2 的 fetch/assemble 读写，人工维护仅限 P0 骨架阶段。
+
+components:  # component/ 下 9 个离线组件
+  - name: env          # Python 3.12 运行环境（源码编译，--prefix 到 component/env）
+    version: pending
+    source: https://www.python.org/ftp/python/
+    sha256: ""
+    status: pending
+  - name: mysql        # MySQL 8.4.x LTS（官方 glibc2.28 tarball）
+    version: pending
+    source: https://cdn.mysql.com/Downloads/MySQL-8.4/
+    sha256: ""
+    status: pending
+  - name: redis        # Redis 源码编译
+    version: pending
+    source: https://download.redis.io/releases/
+    sha256: ""
+    status: pending
+  - name: tengine      # Tengine 3.x（GitHub release）
+    version: pending
+    source: https://github.com/alibaba/tengine/releases/
+    sha256: ""
+    status: pending
+  - name: ntpd         # ntpd 4.2.8p 最新（保留组件名，见 spec §4）
+    version: pending
+    source: https://www.ntp.org/downloads/
+    sha256: ""
+    status: pending
+  - name: prometheus
+    version: pending
+    source: https://github.com/prometheus/prometheus/releases/
+    sha256: ""
+    status: pending
+  - name: grafana      # 11.x
+    version: pending
+    source: https://dl.grafana.com/oss/release/
+    sha256: ""
+    status: pending
+  - name: alertmanager
+    version: pending
+    source: https://github.com/prometheus/alertmanager/releases/
+    sha256: ""
+    status: pending
+  - name: loki
+    version: pending
+    source: https://github.com/grafana/loki/releases/
+    sha256: ""
+    status: pending
+
+agents:  # package_hub 下离线 agent 包（2023 旧包 sha256 为 P2 重做前的基线）
+  - name: omp_salt_agent
+    version: salt-3002.2（2023 旧包基线，P2 以 salt 3007 + py3.12 重做）
+    source: 自建（P2）
+    sha256: 15cf974fc11a8465a952fb4e05ffb9c6fb5c88dfc08be5f72a56d3ba2cb23348
+    status: pending
+  - name: omp_monitor_agent
+    version: v1.1（2023 旧包基线，P2 以 py3.12 + 新 Sanic 重做，源码见 omp_monitor_agent/）
+    source: 自建（P2）
+    sha256: d0938b512bbb76053185f817da622f66617513599cf82f3c7f7725be1662925b
+    status: pending
+  - name: ntpdate
+    version: 20220118152247
+    source: 自带历史包（随包沿用，服务器 /root/omp_build/assets/）
+    sha256: 11934f7f513aed208370583cea67dc7a27d5ef9d141b67c9df2232bfea10e3dc
+    status: pending
+
+exporters:  # omp_monitor_agent/exporters 下第三方 exporter 二进制（版本取自 2023 旧包实测，P2 升级到官方最新）
+  - {name: nodeExporter,         version: "1.4.0",              source: "https://github.com/prometheus/node_exporter/releases/",   sha256: a30e3162a1e7846d9d12377094f1cd24be5200827d36429dd5a8f4cdcdbcb044, status: pending}
+  - {name: promtail,             version: "2.8.0",              source: "https://github.com/grafana/loki/releases/",               sha256: 0aa8084bae5cf87ee973fb38b30ae4549f5e2d219148e235cccc0fc0e4938657, status: pending}
+  - {name: redisExporter,        version: "1.34.1",             source: "https://github.com/oliver006/redis_exporter/releases/",   sha256: 5b741bb4cdc486a6f9e7870950e18d2a39af26a6d5724eac6c6c205a1bff7544, status: pending}
+  - {name: elasticsearchExporter, version: "1.1.0",             source: "https://github.com/prometheus-community/elasticsearch_exporter/releases/", sha256: 86daee434ac90f3ab33faebf5b5d8df8cf87621bd86e53005131d0f505a1c061, status: pending}
+  - {name: kafkaExporter,        version: "1.2.0",              source: "https://github.com/danielqsj/kafka_exporter/releases/",   sha256: 6e707ce22f3ea0d6d166791d8579d22b6d0fff244ae998310ba90365816b9f23, status: pending}
+  - {name: mysqlExporter,        version: "0.12.1",             source: "https://github.com/prometheus/mysqld_exporter/releases/", sha256: 955479ef45343a0d998b1c0627cc9f3e10a1d04fd16e9005e4ed7838c3642cd9, status: pending}
+  - {name: postgreSqlExporter,   version: "0.8.0",              source: "https://github.com/prometheus-community/postgres_exporter/releases/", sha256: 973167381e5275ce7441d1aa2e1c9859b34b21f1e404054fb5f9dc8ab2218090, status: pending}
+  - {name: beanstalkdExporter,   version: unknown,              source: "https://github.com/messagebird/beanstalkd_exporter/releases/", sha256: 827d22b3bb7e0339b632f247cc96d40a0a23e859eb1cb26ea9c185212010ff69, status: pending}
+  - {name: clickhouseExporter,   version: unknown,              source: "https://github.com/f1yegh/clickhouse_exporter/releases/", sha256: b7226093a8e27278a16892f736c8f6f36c7bca47c2bad884adfadecfe99145f5, status: pending}
+  - {name: tengineExporter,      version: unknown(vts 无版本串), source: "https://github.com/hnlq715/nginx-vts-exporter/releases/", sha256: d8bfc548bcbd73ca4f9813a87903d1a98436576b2fc106ca4c018138f105882f, status: pending}
+  - {name: zookeeperExporter,    version: unknown,              source: "https://github.com/danielqsj/zookeeper_exporter/releases/", sha256: 091460829e5ea3ad6deb87f2eba58533f44263233eae9a3e58b4c72b0a7ac0c0, status: pending}
+  - {name: rocketmqExporter,     version: "0.0.2-SNAPSHOT(JAR)", source: "https://github.com/apache/rocketmq-exporter/releases/",  sha256: 8f784516a65c0ba975435a2eacc977e13263e493615d8df017590ee3de27567c, status: pending}
+
+appstore:  # package_hub/back_end_verified 的 app_store 可分发组件（本次不升级，spec §5.3.2；sha256 采自 Task 1 重写前原件）
+  - {name: filebeat,   version: "7.12.0",  source: "历史包沿用（bundle 备份/服务器素材区）", sha256: eb1ce964024aa94213a65d4baaf72a02972157d5b23cffe1b751f0bae33f5603, status: pending}
+  - {name: httpd,      version: "2.4.46",  source: "历史包沿用", sha256: 1b1043564d5f5db5c182546ebb8ee56538b62902c60de2d9002fe4bb27da2e5d, status: pending}
+  - {name: keepalived, version: "2.1.5",   source: "历史包沿用", sha256: 61359b0afa57263f93ac48631232c98d93afee9786ba05afe6af009df5d927a, status: pending}
+  - {name: postgreSql, version: "13.5.0",  source: "历史包沿用", sha256: b5e112a9931ba8b3bff79e00890a0c79700e9ea215741649c1e073cf3c09d4dd, status: pending}
+  - {name: redis,      version: "5.0.14", source: "历史包沿用", sha256: d64fb25b6a6cecde6dc348b820d8831785f0e14ae63f45d241035d4ad038d03f, status: pending}
+  - {name: rocketmq,   version: "4.8.0",   source: "历史包沿用", sha256: f96af97c728b93684f78ee6fd7780c661da332681f71589a050395e0fbfa56ec, status: pending}

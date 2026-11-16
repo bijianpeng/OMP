@@ -179,7 +179,12 @@ Temporary Items
 /package_hub/127.0.0.1/
 
 temp
-/package_hub/omp_monitor_agent.tar.gz
+# 打包工件（二进制一律不入库；manifest 记录 sha256，构建时下载组装）
+/package_hub/*.tar.gz
+/package_hub/back_end_verified/*.tar.gz
+/omp_monitor_agent/**/sbin/
+# 对账快照等本地暂存
+/.tmp_reconcile/
 
 # Node / pnpm (omp_web vben monorepo)
 /omp_web/**/node_modules/
